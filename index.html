@@ -478,11 +478,10 @@
           this.state.progress.message = `Filling ${missing.length} gaps...`;
           this.render();
           
-          for (let i = 0; i < missing.length; i += 10) {
-            const batch = missing.slice(i, i + 10);
+          for (let i = 0; i < missing.length; i += 15) {
+            const batch = missing.slice(i, i + 15);
             await Promise.all(batch.map(async ({ symbol, tf }) => {
               try {
-                await new Promise(resolve => setTimeout(resolve, 150));
                 this.state.progress.message = `Fetching ${symbol} ${tf}...`;
                 this.render();
                 
@@ -547,6 +546,11 @@
                 this.render();
               }
             }));
+            
+            // Delay between batches to respect rate limits
+            if (i + 15 < missing.length) {
+              await new Promise(resolve => setTimeout(resolve, 100));
+            }
           }
           
           await storage.set('vercel-scanner-extremes', JSON.stringify(extremesDB));
@@ -633,20 +637,20 @@
       }
 
       calculateTimeEstimate(candleCount, symbolsCount) {
-        // Estimate: ~300ms per request, 10 concurrent, 150ms delay between batches
+        // Estimate: ~300ms per request, 15 concurrent, 100ms delay between batches
         // Each symbol needs: 5 timeframes × 2 (volume/candle + OI) = 10 requests
         const requestsPerSymbol = TIMEFRAMES.length * 2; // volume/candle + OI
         const totalRequests = symbolsCount * requestsPerSymbol;
-        const batches = Math.ceil(totalRequests / 10);
-        const requestsPerBatch = Math.min(10, totalRequests);
+        const batches = Math.ceil(totalRequests / 15);
+        const requestsPerBatch = Math.min(15, totalRequests);
         
         // If >1000 candles, need multiple API calls per symbol/timeframe
         const apiCallsPerRequest = Math.ceil(candleCount / 1000);
         const adjustedTotalRequests = totalRequests * apiCallsPerRequest;
-        const adjustedBatches = Math.ceil(adjustedTotalRequests / 10);
+        const adjustedBatches = Math.ceil(adjustedTotalRequests / 15);
         
-        // Time per batch: ~400ms (network) + 150ms (delay) = ~550ms
-        const estimatedSeconds = Math.ceil((adjustedBatches * 550) / 1000);
+        // Time per batch: ~400ms (network) + 100ms (delay) = ~500ms
+        const estimatedSeconds = Math.ceil((adjustedBatches * 500) / 1000);
         const minutes = Math.floor(estimatedSeconds / 60);
         const seconds = estimatedSeconds % 60;
         
@@ -687,16 +691,15 @@
 
           const fetchData = {};
 
-          // Fetch volume and candle data in batches of 10
-          for (let i = 0; i < this.state.symbols.length; i += 10) {
-            const batch = this.state.symbols.slice(i, i + 10);
+          // Fetch volume and candle data in batches of 15
+          for (let i = 0; i < this.state.symbols.length; i += 15) {
+            const batch = this.state.symbols.slice(i, i + 15);
             
             await Promise.all(batch.map(async (symbol) => {
               if (!extremesDB[symbol]) extremesDB[symbol] = {};
               
               for (const tf of TIMEFRAMES) {
                 try {
-                  await new Promise(resolve => setTimeout(resolve, 150));
                   this.state.progress.message = `Fetching ${symbol} ${tf} (volume/candle)...`;
                   this.render();
                   
@@ -786,16 +789,20 @@
                 }
               }
             }));
+            
+            // Delay between batches to respect rate limits
+            if (i + 15 < this.state.symbols.length) {
+              await new Promise(resolve => setTimeout(resolve, 100));
+            }
           }
 
-          // Fetch historical OI data in batches of 10
-          for (let i = 0; i < this.state.symbols.length; i += 10) {
-            const batch = this.state.symbols.slice(i, i + 10);
+          // Fetch historical OI data in batches of 15
+          for (let i = 0; i < this.state.symbols.length; i += 15) {
+            const batch = this.state.symbols.slice(i, i + 15);
             
             await Promise.all(batch.map(async (symbol) => {
               for (const tf of TIMEFRAMES) {
                 try {
-                  await new Promise(resolve => setTimeout(resolve, 150));
                   this.state.progress.message = `Fetching ${symbol} ${tf} (OI)...`;
                   this.render();
                   
@@ -904,6 +911,11 @@
                 }
               }
             }));
+            
+            // Delay between batches to respect rate limits
+            if (i + 15 < this.state.symbols.length) {
+              await new Promise(resolve => setTimeout(resolve, 100));
+            }
           }
 
           await storage.set('vercel-scanner-extremes', JSON.stringify(extremesDB));
