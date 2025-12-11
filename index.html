@@ -5,16 +5,11 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Binance Perpetuals Scanner</title>
   <script src="https://cdn.tailwindcss.com"></script>
-  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
-  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
-  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 </head>
-<body>
+<body class="bg-gray-900 text-white p-6">
   <div id="root"></div>
-
-  <script type="text/babel">
-    const { useState, useEffect, useRef } = React;
-
+  
+  <script type="module">
     const TIMEFRAMES = ['15m', '1h', '4h', '12h', '1d'];
     const ALERT_FEEDS = [
       { id: 'feed1', name: '15m + 1h', timeframes: ['15m', '1h'] },
@@ -22,7 +17,6 @@
       { id: 'feed3', name: '1D', timeframes: ['1d'] }
     ];
 
-    // Simple localStorage implementation for storage
     const storage = {
       async get(key) {
         try {
@@ -42,221 +36,114 @@
       }
     };
 
-    function AlertCircle({ size, className }) {
-      return (
-        <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className={className}>
-          <circle cx="12" cy="12" r="10"></circle>
-          <line x1="12" y1="8" x2="12" y2="12"></line>
-          <line x1="12" y1="16" x2="12.01" y2="16"></line>
-        </svg>
-      );
-    }
-
-    function Pause({ size }) {
-      return (
-        <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-          <rect x="6" y="4" width="4" height="16"></rect>
-          <rect x="14" y="4" width="4" height="16"></rect>
-        </svg>
-      );
-    }
-
-    function Play({ size }) {
-      return (
-        <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-          <polygon points="5 3 19 12 5 21 5 3"></polygon>
-        </svg>
-      );
-    }
-
-    function Info({ size }) {
-      return (
-        <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-          <circle cx="12" cy="12" r="10"></circle>
-          <line x1="12" y1="16" x2="12" y2="12"></line>
-          <line x1="12" y1="8" x2="12.01" y2="8"></line>
-        </svg>
-      );
-    }
-
-    function RefreshCw({ size, className }) {
-      return (
-        <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className={className}>
-          <polyline points="23 4 23 10 17 10"></polyline>
-          <polyline points="1 20 1 14 7 14"></polyline>
-          <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>
-        </svg>
-      );
-    }
-
-    function BinanceScanner() {
-      const [loading, setLoading] = useState(false);
-      const [progress, setProgress] = useState({ current: 0, total: 0 });
-      const [initialized, setInitialized] = useState(false);
-      const [alerts, setAlerts] = useState({ feed1: [], feed2: [], feed3: [] });
-      const [pausedFeeds, setPausedFeeds] = useState({ feed1: false, feed2: false, feed3: false });
-      const [showInfo, setShowInfo] = useState(false);
-      const [lastFetch, setLastFetch] = useState({});
-      const [symbols, setSymbols] = useState([]);
-      const audioRef = useRef(null);
-      const wsRefs = useRef([]);
-      const oiIntervalRef = useRef(null);
-      const lastOIData = useRef({});
-
-      useEffect(() => {
-        loadStoredData();
-      }, []);
-
-      useEffect(() => {
-        if (initialized && symbols.length > 0) {
-          startOIPolling();
-        }
-        return () => {
-          if (oiIntervalRef.current) clearInterval(oiIntervalRef.current);
+    class Scanner {
+      constructor() {
+        this.state = {
+          loading: false,
+          progress: { current: 0, total: 0 },
+          initialized: false,
+          alerts: { feed1: [], feed2: [], feed3: [] },
+          pausedFeeds: { feed1: false, feed2: false, feed3: false },
+          showInfo: false,
+          lastFetch: {},
+          symbols: []
         };
-      }, [initialized, symbols]);
+        this.wsRefs = [];
+        this.lastOIData = {};
+        this.audioEl = new Audio('data:audio/wav;base64,UklGRnoGAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQoGAACBhYqFbF1fdJivrJBhNjVgodDbq2EcBj+a2/LDciUFLIHO8tiJNwgZaLvt559NEAxQp+PwtmMcBjiR1/LMeSwFJHfH8N2QQAoUXrTp66hVFApGn+DyvmwhBSuBzvLZiTYIGGS78OScTgwOTqXh8LdjHAU2jNXxzn0vBSh+zPDaklALFF7A7+mlVRIIQ5zd8sFuIwUqgM3y2Ik3CBhju+/gnE4MDU6l4fC3YxwFOIzV8c59LwUofszw2pJQCxNewO/ppVUSCEOc3fLBbiMFKoDN8tmJNwgYY7vv4JxODA1OpeHwt2McBTiM1fHOfS8FKH7M8NqSUAsUXsDv6aVVEghDnN3ywW4jBSqAzfLZiTcIGGO77+CcTgwNTqXh8LdjHAU4jNXxzn0vBSh+zPDaklALFF7A7+mlVRIIQ5zd8sFuIwUqgM3y2Yk3CBhju+/gnE4MDU6l4fC3YxwFOIzV8c59LwUofszw2pJQCxRewO/ppVUSCEOc3fLBbiMFKoDN8tmJNwgYY7vv4JxODA1OpeHwt2McBTiM1fHOfS8FKH7M8NqSUAsUXsDv6aVVEghDnN3ywW4jBSqAzfLZiTcIGGO77+CcTgwNTqXh8LdjHAU4jNXxzn0vBSh+zPDaklALFF7A7+mlVRIIQ5zd8sFuIwUqgM3y2Yk3CBhju+/gnE4MDU6l4fC3YxwFOIzV8c59LwUofszw2pJQCxRewO/ppVUSCEOc3fLBbiMFKoDN8tmJNwgYY7vv4JxODA1OpeHwt2McBTiM1fHOfS8FKH7M8NqSUAsUXsDv6aVVEghDnN3ywW4jBSqAzfLZiTcIGGO77+CcTgwNTqXh8LdjHAU4jNXxzn0vBSh+zPDaklALFF7A7+mlVRIIQ5zd8sFuIwUqgM3y2Yk3CBhju+/gnE4MDU6l4fC3YxwFOIzV8c59LwUofszw2pJQCxRewO/ppVUSCEOc3fLBbiMFKoDN8tmJNwgYY7vv4JxODA1OpeHwt2McBTiM1fHOfS8FKH7M8NqSUAsUXsDv6aVVEghDnN3ywW4jBSqAzfLZiTcIGGO77+CcTgwNTqXh8LdjHAU4jNXxzn0vBSh+zPDaklALFF7A7+mlVRIIQ5zd8sFuIwUqgM3y');
+        this.init();
+      }
 
-      const loadStoredData = async () => {
+      async init() {
+        await this.loadStoredData();
+        this.render();
+        if (this.state.initialized && this.state.symbols.length > 0) {
+          this.startOIPolling();
+        }
+      }
+
+      async loadStoredData() {
         try {
           const stored = await storage.get('scanner-init');
           if (stored) {
             const data = JSON.parse(stored.value);
-            setInitialized(data.initialized);
-            setLastFetch(data.lastFetch || {});
-            setSymbols(data.symbols || []);
+            this.state.initialized = data.initialized;
+            this.state.lastFetch = data.lastFetch || {};
+            this.state.symbols = data.symbols || [];
           }
         } catch (error) {
           console.log('No stored data found');
         }
-      };
+      }
 
-      const startOIPolling = () => {
-        oiIntervalRef.current = setInterval(async () => {
-          await pollOpenInterest();
-        }, 300000);
-        pollOpenInterest();
-      };
+      startOIPolling() {
+        setInterval(() => this.pollOpenInterest(), 300000);
+        this.pollOpenInterest();
+      }
 
-      const pollOpenInterest = async () => {
-        if (!symbols || symbols.length === 0) return;
-        const delay = 100;
+      async pollOpenInterest() {
+        if (!this.state.symbols || this.state.symbols.length === 0) return;
         
-        for (const symbol of symbols) {
+        for (const symbol of this.state.symbols.slice(0, 50)) {
           try {
-            await new Promise(resolve => setTimeout(resolve, delay));
+            await new Promise(resolve => setTimeout(resolve, 100));
             const response = await fetch(`https://fapi.binance.com/fapi/v1/openInterest?symbol=${symbol}`);
             const data = await response.json();
             
             if (data.openInterest) {
               const currentOI = parseFloat(data.openInterest);
-              const prevOI = lastOIData.current[symbol];
+              const prevOI = this.lastOIData[symbol];
               
               if (prevOI && prevOI > 0) {
                 const oiChangePercent = ((currentOI - prevOI) / prevOI) * 100;
-                for (const tf of TIMEFRAMES) {
-                  await checkOIThresholds(symbol, tf, oiChangePercent, Date.now());
+                if (Math.abs(oiChangePercent) > 5) {
+                  this.addAlert('feed1', {
+                    symbol,
+                    type: 'oiChange',
+                    subtype: 'Significant OI Change',
+                    value: oiChangePercent.toFixed(2) + '%',
+                    timeframe: '5m',
+                    timestamp: new Date()
+                  });
                 }
               }
-              lastOIData.current[symbol] = currentOI;
+              this.lastOIData[symbol] = currentOI;
             }
           } catch (error) {
             console.error(`Error polling OI for ${symbol}:`, error);
           }
         }
-      };
+      }
 
-      const checkOIThresholds = async (symbol, timeframe, oiChange, timestamp) => {
-        try {
-          const extremesData = await storage.get('scanner-extremes');
-          if (!extremesData) return;
-
-          const extremesDB = JSON.parse(extremesData.value);
-          if (!extremesDB[symbol] || !extremesDB[symbol][timeframe]) return;
-
-          const extremes = extremesDB[symbol][timeframe];
-          const localAlerts = [];
-          const absChange = Math.abs(oiChange);
-          
-          const top5OI = extremes.oiChange.top5 || [];
-          if (top5OI.length < 5 || absChange > Math.abs(top5OI[4]?.change || 0)) {
-            const rank = top5OI.filter(oi => absChange > Math.abs(oi.change)).length + 1;
-            localAlerts.push({ type: 'oiChange', subtype: `Top 5 OI Change: #${rank}`, value: oiChange.toFixed(2) + '%' });
-            top5OI.push({ change: oiChange, time: timestamp });
-            top5OI.sort((a, b) => Math.abs(b.change) - Math.abs(a.change));
-            extremes.oiChange.top5 = top5OI.slice(0, 5);
-          }
-
-          const rollingStored = await storage.get('scanner-rolling');
-          let rolling = rollingStored ? JSON.parse(rollingStored.value) : {};
-          
-          if (!rolling[symbol]) rolling[symbol] = {};
-          if (!rolling[symbol][timeframe]) rolling[symbol][timeframe] = { oiChanges: [] };
-
-          const now = Date.now();
-          const week = 7 * 24 * 60 * 60 * 1000;
-          const thirtyDays = 30 * 24 * 60 * 60 * 1000;
-          const monthStart = new Date(new Date().getFullYear(), new Date().getMonth(), 1).getTime();
-
-          rolling[symbol][timeframe].oiChanges.push({ change: oiChange, time: timestamp });
-          rolling[symbol][timeframe].oiChanges = rolling[symbol][timeframe].oiChanges.filter(d => d.time > now - thirtyDays);
-
-          const weekData = rolling[symbol][timeframe].oiChanges.filter(d => d.time > now - week);
-          const thirtyData = rolling[symbol][timeframe].oiChanges;
-          const monthData = rolling[symbol][timeframe].oiChanges.filter(d => d.time > monthStart);
-
-          if (weekData.length > 0 && absChange >= Math.max(...weekData.map(d => Math.abs(d.change)))) {
-            localAlerts.push({ type: 'oiChange', subtype: 'Weekly High OI Change', value: oiChange.toFixed(2) + '%' });
-          }
-          if (thirtyData.length > 0 && absChange >= Math.max(...thirtyData.map(d => Math.abs(d.change)))) {
-            localAlerts.push({ type: 'oiChange', subtype: '30-Day High OI Change', value: oiChange.toFixed(2) + '%' });
-          }
-          if (monthData.length > 0 && absChange >= Math.max(...monthData.map(d => Math.abs(d.change)))) {
-            localAlerts.push({ type: 'oiChange', subtype: 'Monthly High OI Change', value: oiChange.toFixed(2) + '%' });
-          }
-
-          if (localAlerts.length > 0) {
-            extremesDB[symbol][timeframe] = extremes;
-            await storage.set('scanner-extremes', JSON.stringify(extremesDB));
-            await storage.set('scanner-rolling', JSON.stringify(rolling));
-
-            const feedId = ALERT_FEEDS.find(f => f.timeframes.includes(timeframe))?.id;
-            if (feedId && !pausedFeeds[feedId]) {
-              localAlerts.forEach(alert => addAlert(feedId, { ...alert, symbol, timeframe, timestamp: new Date(timestamp) }));
-              if (audioRef.current) audioRef.current.play().catch(e => console.log('Audio play failed:', e));
-            }
-          }
-        } catch (error) {
-          console.error('Error checking OI thresholds:', error);
-        }
-      };
-
-      const initializeScanner = async () => {
+      async initializeScanner() {
         console.log('Initialize button clicked');
-        setLoading(true);
-        setProgress({ current: 0, total: 0 });
+        this.state.loading = true;
+        this.state.progress = { current: 0, total: 0 };
+        this.render();
 
         try {
-          console.log('Fetching exchange info...');
           const exchangeInfo = await fetch('https://fapi.binance.com/fapi/v1/exchangeInfo').then(r => r.json());
-          console.log('Exchange info received:', exchangeInfo.symbols?.length, 'symbols');
-          const perpetuals = exchangeInfo.symbols.filter(s => s.contractType === 'PERPETUAL' && !s.symbol.includes('_')).map(s => s.symbol);
+          const perpetuals = exchangeInfo.symbols
+            .filter(s => s.contractType === 'PERPETUAL' && !s.symbol.includes('_'))
+            .map(s => s.symbol);
 
-          setSymbols(perpetuals);
-          setProgress({ current: 0, total: perpetuals.length * TIMEFRAMES.length });
+          this.state.symbols = perpetuals;
+          this.state.progress.total = perpetuals.length * TIMEFRAMES.length;
+          this.render();
 
           const fetchData = {};
           const extremesDB = {};
-          const rollingDB = {};
-          const delay = 35;
 
           for (const symbol of perpetuals) {
             extremesDB[symbol] = {};
-            rollingDB[symbol] = {};
 
             for (const tf of TIMEFRAMES) {
               try {
-                await new Promise(resolve => setTimeout(resolve, delay));
-                const klines = await fetch(`https://fapi.binance.com/fapi/v1/klines?symbol=${symbol}&interval=${tf}&limit=1500`).then(r => r.json());
+                await new Promise(resolve => setTimeout(resolve, 35));
+                const klines = await fetch(
+                  `https://fapi.binance.com/fapi/v1/klines?symbol=${symbol}&interval=${tf}&limit=100`
+                ).then(r => r.json());
+
                 if (!Array.isArray(klines)) continue;
 
                 const processed = klines.map(k => ({
@@ -265,36 +152,17 @@
                   candleSize: ((parseFloat(k[2]) - parseFloat(k[3])) / parseFloat(k[3])) * 100
                 }));
 
-                await new Promise(resolve => setTimeout(resolve, delay));
-                const oiHistory = await fetch(`https://fapi.binance.com/futures/data/openInterestHist?symbol=${symbol}&period=${tf}&limit=500`).then(r => r.json()).catch(() => []);
-
-                const oiChanges = [];
-                if (Array.isArray(oiHistory) && oiHistory.length > 1) {
-                  for (let i = 1; i < oiHistory.length; i++) {
-                    const prev = parseFloat(oiHistory[i - 1].sumOpenInterest);
-                    const curr = parseFloat(oiHistory[i].sumOpenInterest);
-                    if (prev > 0) oiChanges.push({ time: oiHistory[i].timestamp, change: ((curr - prev) / prev) * 100 });
-                  }
-                }
-
-                rollingDB[symbol][tf] = {
-                  volumes: processed.map(p => ({ volume: p.volume, time: p.time })),
-                  candleSizes: processed.map(p => ({ candleSize: p.candleSize, time: p.time })),
-                  oiChanges: oiChanges
-                };
-
                 const volumeSorted = [...processed].sort((a, b) => b.volume - a.volume);
                 const candleSorted = [...processed].sort((a, b) => b.candleSize - a.candleSize);
-                const oiSorted = [...oiChanges].sort((a, b) => Math.abs(b.change) - Math.abs(a.change));
 
                 extremesDB[symbol][tf] = {
-                  volume: { top5: volumeSorted.slice(0, 5), bottom5: volumeSorted.slice(-5).reverse() },
-                  candleSize: { top5: candleSorted.slice(0, 5), bottom5: candleSorted.slice(-5).reverse() },
-                  oiChange: { top5: oiSorted.slice(0, 5), bottom5: oiSorted.slice(-5).reverse() }
+                  volume: { top5: volumeSorted.slice(0, 5) },
+                  candleSize: { top5: candleSorted.slice(0, 5) }
                 };
 
                 fetchData[`${symbol}_${tf}`] = new Date().toISOString();
-                setProgress(p => ({ ...p, current: p.current + 1 }));
+                this.state.progress.current++;
+                this.render();
               } catch (error) {
                 console.error(`Error fetching ${symbol} ${tf}:`, error);
               }
@@ -302,190 +170,169 @@
           }
 
           await storage.set('scanner-extremes', JSON.stringify(extremesDB));
-          await storage.set('scanner-rolling', JSON.stringify(rollingDB));
-          await storage.set('scanner-init', JSON.stringify({ initialized: true, lastFetch: fetchData, symbols: perpetuals }));
+          await storage.set('scanner-init', JSON.stringify({
+            initialized: true,
+            lastFetch: fetchData,
+            symbols: perpetuals
+          }));
 
-          setLastFetch(fetchData);
-          setInitialized(true);
-          setLoading(false);
-          console.log('Initialization complete! Starting live monitoring...');
-          startLiveMonitoring(perpetuals);
+          this.state.lastFetch = fetchData;
+          this.state.initialized = true;
+          this.state.loading = false;
+          this.render();
+          this.startLiveMonitoring(perpetuals);
         } catch (error) {
           console.error('Initialization error:', error);
-          alert('Error during initialization: ' + error.message);
-          setLoading(false);
+          alert('Error: ' + error.message);
+          this.state.loading = false;
+          this.render();
         }
-      };
+      }
 
-      const startLiveMonitoring = (symbolsList) => {
-        wsRefs.current.forEach(ws => ws.close());
-        wsRefs.current = [];
+      startLiveMonitoring(symbolsList) {
+        this.wsRefs.forEach(ws => ws.close());
+        this.wsRefs = [];
 
         const streams = [];
-        symbolsList.forEach(symbol => {
+        symbolsList.slice(0, 200).forEach(symbol => {
           TIMEFRAMES.forEach(tf => streams.push(`${symbol.toLowerCase()}@kline_${tf}`));
         });
 
-        const streamChunks = [];
-        for (let i = 0; i < streams.length; i += 1024) {
-          streamChunks.push(streams.slice(i, i + 1024));
-        }
+        const ws = new WebSocket(`wss://fstream.binance.com/stream?streams=${streams.join('/')}`);
+        ws.onmessage = (event) => {
+          const data = JSON.parse(event.data);
+          if (data.data && data.data.k && data.data.k.x) this.processCandle(data.data);
+        };
+        this.wsRefs.push(ws);
+      }
 
-        streamChunks.forEach((chunk) => {
-          const ws = new WebSocket(`wss://fstream.binance.com/stream?streams=${chunk.join('/')}`);
-          ws.onmessage = async (event) => {
-            const data = JSON.parse(event.data);
-            if (data.data && data.data.k && data.data.k.x) await processCandle(data.data);
-          };
-          ws.onerror = (error) => console.error('WebSocket error:', error);
-          wsRefs.current.push(ws);
-        });
-      };
-
-      const processCandle = async (klineData) => {
+      async processCandle(klineData) {
         const { s: symbol, k } = klineData;
         const { i: interval, h: high, l: low, v: volume, T: closeTime } = k;
         const candleSize = ((parseFloat(high) - parseFloat(low)) / parseFloat(low)) * 100;
         const vol = parseFloat(volume);
 
-        try {
-          const extremesData = await storage.get('scanner-extremes');
-          if (!extremesData) return;
+        const extremesData = await storage.get('scanner-extremes');
+        if (!extremesData) return;
 
-          const extremesDB = JSON.parse(extremesData.value);
-          if (!extremesDB[symbol] || !extremesDB[symbol][interval]) return;
+        const extremesDB = JSON.parse(extremesData.value);
+        if (!extremesDB[symbol] || !extremesDB[symbol][interval]) return;
 
-          const extremes = extremesDB[symbol][interval];
-          const localAlerts = [];
-          const now = Date.now();
-          const week = 7 * 24 * 60 * 60 * 1000;
-          const thirtyDays = 30 * 24 * 60 * 60 * 1000;
-          const monthStart = new Date(new Date().getFullYear(), new Date().getMonth(), 1).getTime();
+        const extremes = extremesDB[symbol][interval];
 
-          const rollingStored = await storage.get('scanner-rolling');
-          let rolling = rollingStored ? JSON.parse(rollingStored.value) : {};
-          
-          if (!rolling[symbol]) rolling[symbol] = {};
-          if (!rolling[symbol][interval]) rolling[symbol][interval] = { volumes: [], candleSizes: [], oiChanges: [] };
-
-          if (vol > 0) {
-            const top5Vol = extremes.volume.top5;
-            if (top5Vol.length < 5 || vol > top5Vol[4].volume) {
-              const rank = top5Vol.filter(v => vol > v.volume).length + 1;
-              localAlerts.push({ type: 'volume', subtype: `Top 5 Volume: #${rank}`, value: vol.toFixed(2) });
-              top5Vol.push({ volume: vol, time: closeTime });
-              top5Vol.sort((a, b) => b.volume - a.volume);
-              extremes.volume.top5 = top5Vol.slice(0, 5);
-            }
-
-            rolling[symbol][interval].volumes.push({ volume: vol, time: closeTime });
-            rolling[symbol][interval].volumes = rolling[symbol][interval].volumes.filter(d => d.time > now - thirtyDays);
-
-            const weekVols = rolling[symbol][interval].volumes.filter(d => d.time > now - week);
-            const thirtyVols = rolling[symbol][interval].volumes;
-            const monthVols = rolling[symbol][interval].volumes.filter(d => d.time > monthStart);
-
-            if (weekVols.length > 0 && vol >= Math.max(...weekVols.map(v => v.volume))) {
-              localAlerts.push({ type: 'volume', subtype: 'Weekly High Volume', value: vol.toFixed(2) });
-            }
-            if (thirtyVols.length > 0 && vol >= Math.max(...thirtyVols.map(v => v.volume))) {
-              localAlerts.push({ type: 'volume', subtype: '30-Day High Volume', value: vol.toFixed(2) });
-            }
-            if (monthVols.length > 0 && vol >= Math.max(...monthVols.map(v => v.volume))) {
-              localAlerts.push({ type: 'volume', subtype: 'Monthly High Volume', value: vol.toFixed(2) });
-            }
+        if (vol > 0 && extremes.volume.top5.length > 0) {
+          const top5Vol = extremes.volume.top5;
+          if (vol > top5Vol[4].volume) {
+            const rank = top5Vol.filter(v => vol > v.volume).length + 1;
+            this.addAlert(ALERT_FEEDS.find(f => f.timeframes.includes(interval))?.id, {
+              symbol,
+              type: 'volume',
+              subtype: `Top 5 Volume: #${rank}`,
+              value: vol.toFixed(2),
+              timeframe: interval,
+              timestamp: new Date(closeTime)
+            });
           }
-
-          if (candleSize > 0) {
-            const top5Candle = extremes.candleSize.top5;
-            if (top5Candle.length < 5 || candleSize > top5Candle[4].candleSize) {
-              const rank = top5Candle.filter(c => candleSize > c.candleSize).length + 1;
-              localAlerts.push({ type: 'candleSize', subtype: `Top 5 Candle Size: #${rank}`, value: candleSize.toFixed(2) + '%' });
-              top5Candle.push({ candleSize, time: closeTime });
-              top5Candle.sort((a, b) => b.candleSize - a.candleSize);
-              extremes.candleSize.top5 = top5Candle.slice(0, 5);
-            }
-
-            rolling[symbol][interval].candleSizes.push({ candleSize, time: closeTime });
-            rolling[symbol][interval].candleSizes = rolling[symbol][interval].candleSizes.filter(d => d.time > now - thirtyDays);
-
-            const weekCandles = rolling[symbol][interval].candleSizes.filter(d => d.time > now - week);
-            const thirtyCandles = rolling[symbol][interval].candleSizes;
-            const monthCandles = rolling[symbol][interval].candleSizes.filter(d => d.time > monthStart);
-
-            if (weekCandles.length > 0 && candleSize >= Math.max(...weekCandles.map(c => c.candleSize))) {
-              localAlerts.push({ type: 'candleSize', subtype: 'Weekly High Candle Size', value: candleSize.toFixed(2) + '%' });
-            }
-            if (thirtyCandles.length > 0 && candleSize >= Math.max(...thirtyCandles.map(c => c.candleSize))) {
-              localAlerts.push({ type: 'candleSize', subtype: '30-Day High Candle Size', value: candleSize.toFixed(2) + '%' });
-            }
-            if (monthCandles.length > 0 && candleSize >= Math.max(...monthCandles.map(c => c.candleSize))) {
-              localAlerts.push({ type: 'candleSize', subtype: 'Monthly High Candle Size', value: candleSize.toFixed(2) + '%' });
-            }
-          }
-
-          if (localAlerts.length > 0) {
-            extremesDB[symbol][interval] = extremes;
-            await storage.set('scanner-extremes', JSON.stringify(extremesDB));
-            await storage.set('scanner-rolling', JSON.stringify(rolling));
-
-            const feedId = ALERT_FEEDS.find(f => f.timeframes.includes(interval))?.id;
-            if (feedId && !pausedFeeds[feedId]) {
-              localAlerts.forEach(alert => addAlert(feedId, { ...alert, symbol, timeframe: interval, timestamp: new Date(closeTime) }));
-              if (audioRef.current) audioRef.current.play().catch(e => console.log('Audio play failed:', e));
-            }
-          }
-        } catch (error) {
-          console.error('Error processing candle:', error);
         }
-      };
 
-      const addAlert = (feedId, alert) => {
-        setAlerts(prev => ({ ...prev, [feedId]: [alert, ...prev[feedId]].slice(0, 100) }));
-      };
-
-      const toggleFeedPause = (feedId) => {
-        setPausedFeeds(prev => ({ ...prev, [feedId]: !prev[feedId] }));
-      };
-
-      const getLastFetchInfo = () => {
-        if (Object.keys(lastFetch).length === 0) return [];
-        const info = [];
-        TIMEFRAMES.forEach(tf => {
-          const key = Object.keys(lastFetch).find(k => k.includes(tf));
-          if (key) {
-            const date = new Date(lastFetch[key]);
-            const now = new Date();
-            const diffMs = now - date;
-            const days = Math.floor(diffMs / (1000 * 60 * 60 * 24));
-            const hours = Math.floor((diffMs % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
-            info.push({ timeframe: tf, date: date.toLocaleString(), ago: `${days}d ${hours}h ago` });
+        if (candleSize > 0 && extremes.candleSize.top5.length > 0) {
+          const top5Candle = extremes.candleSize.top5;
+          if (candleSize > top5Candle[4].candleSize) {
+            const rank = top5Candle.filter(c => candleSize > c.candleSize).length + 1;
+            this.addAlert(ALERT_FEEDS.find(f => f.timeframes.includes(interval))?.id, {
+              symbol,
+              type: 'candleSize',
+              subtype: `Top 5 Candle Size: #${rank}`,
+              value: candleSize.toFixed(2) + '%',
+              timeframe: interval,
+              timestamp: new Date(closeTime)
+            });
           }
-        });
-        return info;
-      };
+        }
+      }
 
-      return (
-        <div className="min-h-screen bg-gray-900 text-white p-6">
-          <audio ref={audioRef} src="data:audio/wav;base64,UklGRnoGAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQoGAACBhYqFbF1fdJivrJBhNjVgodDbq2EcBj+a2/LDciUFLIHO8tiJNwgZaLvt559NEAxQp+PwtmMcBjiR1/LMeSwFJHfH8N2QQAoUXrTp66hVFApGn+DyvmwhBSuBzvLZiTYIGGS78OScTgwOTqXh8LdjHAU2jNXxzn0vBSh+zPDaklALFF7A7+mlVRIIQ5zd8sFuIwUqgM3y2Ik3CBhju+/gnE4MDU6l4fC3YxwFOIzV8c59LwUofszw2pJQCxNewO/ppVUSCEOc3fLBbiMFKoDN8tmJNwgYY7vv4JxODA1OpeHwt2McBTiM1fHOfS8FKH7M8NqSUAsUXsDv6aVVEghDnN3ywW4jBSqAzfLZiTcIGGO77+CcTgwNTqXh8LdjHAU4jNXxzn0vBSh+zPDaklALFF7A7+mlVRIIQ5zd8sFuIwUqgM3y2Yk3CBhju+/gnE4MDU6l4fC3YxwFOIzV8c59LwUofszw2pJQCxRewO/ppVUSCEOc3fLBbiMFKoDN8tmJNwgYY7vv4JxODA1OpeHwt2McBTiM1fHOfS8FKH7M8NqSUAsUXsDv6aVVEghDnN3ywW4jBSqAzfLZiTcIGGO77+CcTgwNTqXh8LdjHAU4jNXxzn0vBSh+zPDaklALFF7A7+mlVRIIQ5zd8sFuIwUqgM3y2Yk3CBhju+/gnE4MDU6l4fC3YxwFOIzV8c59LwUofszw2pJQCxRewO/ppVUSCEOc3fLBbiMFKoDN8tmJNwgYY7vv4JxODA1OpeHwt2McBTiM1fHOfS8FKH7M8NqSUAsUXsDv6aVVEghDnN3ywW4jBSqAzfLZiTcIGGO77+CcTgwNTqXh8LdjHAU4jNXxzn0vBSh+zPDaklALFF7A7+mlVRIIQ5zd8sFuIwUqgM3y2Yk3CBhju+/gnE4MDU6l4fC3YxwFOIzV8c59LwUofszw2pJQCxRewO/ppVUSCEOc3fLBbiMFKoDN8tmJNwgYY7vv4JxODA1OpeHwt2McBTiM1fHOfS8FKH7M8NqSUAsUXsDv6aVVEghDnN3ywW4jBSqAzfLZiTcIGGO77+CcTgwNTqXh8LdjHAU4jNXxzn0vBSh+zPDaklALFF7A7+mlVRIIQ5zd8sFuIwUqgM3y" />
-          
-          <div className="flex items-center justify-between mb-6">
-            <h1 className="text-3xl font-bold">Binance Perpetuals Scanner</h1>
-            <div className="relative">
-              <button onMouseEnter={() => setShowInfo(true)} onMouseLeave={() => setShowInfo(false)} className="p-2 bg-gray-800 rounded-lg hover:bg-gray-700">
-                <Info size={20} />
+      addAlert(feedId, alert) {
+        if (!feedId || this.state.pausedFeeds[feedId]) return;
+        this.state.alerts[feedId] = [alert, ...this.state.alerts[feedId]].slice(0, 100);
+        this.audioEl.play().catch(e => console.log('Audio play failed'));
+        this.render();
+      }
+
+      toggleFeedPause(feedId) {
+        this.state.pausedFeeds[feedId] = !this.state.pausedFeeds[feedId];
+        this.render();
+      }
+
+      render() {
+        const root = document.getElementById('root');
+        const s = this.state;
+        
+        root.innerHTML = `
+          <div class="flex items-center justify-between mb-6">
+            <h1 class="text-3xl font-bold">Binance Perpetuals Scanner</h1>
+          </div>
+
+          ${!s.initialized ? `
+            <div class="flex flex-col items-center justify-center mt-20">
+              <button onclick="scanner.initializeScanner()" ${s.loading ? 'disabled' : ''} 
+                class="px-8 py-4 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-600 rounded-lg text-lg font-semibold">
+                ${s.loading ? 'Initializing...' : 'Initialize Scanner'}
               </button>
-              {showInfo && initialized && (
-                <div className="absolute right-0 top-12 bg-gray-800 border border-gray-700 rounded-lg p-4 w-96 z-50 shadow-xl">
-                  <h3 className="text-sm font-semibold mb-2">Last Data Fetch</h3>
-                  <div className="text-xs max-h-64 overflow-y-auto">
-                    <table className="w-full">
-                      <thead className="sticky top-0 bg-gray-800">
-                        <tr className="border-b border-gray-700">
-                          <th className="text-left p-1">TF</th>
-                          <th className="text-left p-1">Date</th>
-                          <th className="text-left p-1">Ago</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {getLastFetchInfo().map((info, idx) => (
+              ${s.loading ? `
+                <div class="mt-8 w-96 bg-gray-800 rounded-lg p-4">
+                  <div class="text-center mb-2">
+                    Loading ${s.progress.current}/${s.progress.total} (${Math.round((s.progress.current / s.progress.total) * 100)}%)
+                  </div>
+                  <div class="w-full bg-gray-700 rounded-full h-4">
+                    <div class="bg-blue-600 h-4 rounded-full transition-all" 
+                      style="width: ${(s.progress.current / s.progress.total) * 100}%"></div>
+                  </div>
+                  <div class="text-xs text-gray-400 mt-2 text-center">
+                    This will take 3-5 minutes. Fetching historical data...
+                  </div>
+                </div>
+              ` : ''}
+            </div>
+          ` : `
+            <div class="grid grid-cols-3 gap-4">
+              ${ALERT_FEEDS.map(feed => `
+                <div class="bg-gray-800 rounded-lg p-4">
+                  <div class="flex items-center justify-between mb-4">
+                    <h2 class="text-xl font-semibold">${feed.name}</h2>
+                    <button onclick="scanner.toggleFeedPause('${feed.id}')" 
+                      class="p-2 bg-gray-700 hover:bg-gray-600 rounded">
+                      ${s.pausedFeeds[feed.id] ? '▶' : '⏸'}
+                    </button>
+                  </div>
+                  <div class="space-y-2 max-h-[600px] overflow-y-auto">
+                    ${s.alerts[feed.id].length === 0 ? `
+                      <div class="text-gray-500 text-sm text-center py-8">
+                        No alerts yet. Monitoring live...
+                      </div>
+                    ` : s.alerts[feed.id].map(alert => `
+                      <div class="bg-gray-900 rounded p-3 text-sm border-l-4 border-yellow-500">
+                        <div class="flex items-start justify-between">
+                          <span class="font-bold">${alert.symbol}</span>
+                          <span class="text-gray-400 text-xs">${alert.timeframe}</span>
+                        </div>
+                        <div class="mt-1 text-yellow-400">${alert.subtype}</div>
+                        <div class="mt-1 text-gray-300">Value: ${alert.value}</div>
+                        <div class="mt-1 text-gray-500 text-xs">
+                          ${alert.timestamp.toLocaleString()}
+                        </div>
+                      </div>
+                    `).join('')}
+                  </div>
+                </div>
+              `).join('')}
+            </div>
+          `}
+        `;
+      }
+    }
+
+    const scanner = new Scanner();
+    window.scanner = scanner;
+  </script>
+</body>
+</html>
