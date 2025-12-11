@@ -716,7 +716,7 @@
           const requestsPerSymbolTf = Math.ceil(count / 1000);
           const totalRequests = this.state.symbols.length * TIMEFRAMES.length * 2 * requestsPerSymbolTf;
           this.state.progress.total = totalRequests;
-          this.state.progress.message = `Fetching ${count} candles for ${this.state.symbols.length} symbols...`;
+          this.state.progress.message = `Fetching ${count} candles per timeframe for ${this.state.symbols.length} symbols (${totalRequests} API requests)...`;
           this.render();
 
           const fetchData = {};
@@ -728,9 +728,9 @@
             await Promise.all(batch.map(async (symbol) => {
               if (!extremesDB[symbol]) extremesDB[symbol] = {};
               
-              for (const tf of TIMEFRAMES) {
+                  for (const tf of TIMEFRAMES) {
                 try {
-                  this.state.progress.message = `Fetching ${symbol} ${tf} (volume/candle)...`;
+                  this.state.progress.message = `Fetching ${symbol} ${tf} (${count} candles)...`;
                   this.render();
                   
                   // Fetch multiple batches if count > 1000
@@ -738,7 +738,7 @@
                   const batchesNeeded = Math.ceil(count / 1000);
                   
                   for (let batchNum = 0; batchNum < batchesNeeded; batchNum++) {
-                    const limit = batchNum === batchesNeeded - 1 ? (count % 1000 || 1000) : 1000;
+                    const limit = batchNum === batchesNeeded - 1 ? (count % 1000 || count) : Math.min(1000, count);
                     const endTime = batchNum === 0 ? undefined : allKlines[0] ? allKlines[0][0] - 1 : undefined;
                     
                     let url = `https://fapi.binance.com/fapi/v1/klines?symbol=${symbol}&interval=${tf}&limit=${limit}`;
