@@ -215,16 +215,25 @@
         this.pollOpenInterest();
       }
 
-      async pollOpenInterest() {
-        if (!this.state.symbols || this.state.symbols.length === 0) return;
-        
-        for (const symbol of this.state.symbols.slice(0, 50)) {
-          try {
-            await new Promise(resolve => setTimeout(resolve, 100));
-            const response = await fetch(`https://fapi.binance.com/fapi/v1/openInterest?symbol=${symbol}`);
-            const data = await response.json();
-            
-            if (data.openInterest) {
+       async pollOpenInterest() {
+         if (!this.state.symbols || this.state.symbols.length === 0) return;
+         
+         for (const symbol of this.state.symbols.slice(0, 50)) {
+           try {
+             await new Promise(resolve => setTimeout(resolve, 100));
+             const response = await fetch(`https://fapi.binance.com/fapi/v1/openInterest?symbol=${symbol}`);
+             
+             if (!response.ok) {
+               // Skip symbols that don't support OI (400, 404, etc.)
+               if (response.status === 400 || response.status === 404) {
+                 continue;
+               }
+               throw new Error(`HTTP ${response.status}`);
+             }
+             
+             const data = await response.json();
+             
+             if (data.openInterest) {
               const currentOIUsdt = parseFloat(data.openInterest);
               let currentOICoin = data.sumOpenInterest ? parseFloat(data.sumOpenInterest) : null;
               
@@ -1123,6 +1132,12 @@
         // Ensure oiHistory is initialized
         if (!this.oiHistory) this.oiHistory = {};
         
+        // Debug logging
+        console.log('getExplorerData - Symbol:', symbol);
+        console.log('getExplorerData - extremesDB keys:', Object.keys(extremesDB));
+        console.log('getExplorerData - extremesDB[symbol]:', extremesDB[symbol]);
+        console.log('getExplorerData - oiHistory[symbol]:', this.oiHistory[symbol]);
+        
         const data = {
           symbol,
           timeframes: {}
@@ -1133,6 +1148,8 @@
           const candleData = extremesDB[symbol]?.[tf]?.candleSize?.top50 || [];
           const oiPosData = (this.oiHistory[symbol] && this.oiHistory[symbol][tf]) ? (this.oiHistory[symbol][tf].top50Positive || []) : [];
           const oiNegData = (this.oiHistory[symbol] && this.oiHistory[symbol][tf]) ? (this.oiHistory[symbol][tf].top50Negative || []) : [];
+          
+          console.log(`getExplorerData - ${tf}: volData=${volData.length}, candleData=${candleData.length}, oiPosData=${oiPosData.length}, oiNegData=${oiNegData.length}`);
           
           // Filter by time
           const filteredVol = this.filterDataByTime(volData, this.state.timeFilter);
@@ -1154,6 +1171,7 @@
           };
         });
         
+        console.log('getExplorerData - Final data:', data);
         return data;
       }
 
