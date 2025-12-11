@@ -772,8 +772,6 @@
                     candleSize: ((parseFloat(k[2]) - parseFloat(k[3])) / parseFloat(k[3])) * 100
                   }));
 
-                  console.log(`Fetched ${processed.length} candles for ${symbol} ${tf}`);
-
                   const volumeSorted = [...processed].sort((a, b) => b.volume - a.volume);
                   const candleSorted = [...processed].sort((a, b) => b.candleSize - a.candleSize);
 
@@ -782,8 +780,6 @@
                   
                   const mergedVol = [...existingVol, ...volumeSorted].sort((a, b) => b.volume - a.volume).slice(0, 50);
                   const mergedCandle = [...existingCandle, ...candleSorted].sort((a, b) => b.candleSize - a.candleSize).slice(0, 50);
-
-                  console.log(`Storing ${mergedVol.length} volume entries and ${mergedCandle.length} candle entries for ${symbol} ${tf}`);
 
                   extremesDB[symbol][tf] = {
                     volume: { top50: mergedVol },
@@ -968,13 +964,7 @@
             }
           }
 
-          // Verify data was stored before saving
-          const sampleSymbol = this.state.symbols[0];
-          const sampleTf = TIMEFRAMES[0];
-          const sampleVolCount = extremesDB[sampleSymbol]?.[sampleTf]?.volume?.top50?.length || 0;
-          const sampleCandleCount = extremesDB[sampleSymbol]?.[sampleTf]?.candleSize?.top50?.length || 0;
-          console.log(`Sample data check - ${sampleSymbol} ${sampleTf}: ${sampleVolCount} volume, ${sampleCandleCount} candle entries`);
-          
+          // Final save
           await storage.set('vercel-scanner-extremes', JSON.stringify(extremesDB));
           await storage.set('vercel-scanner-timestamps', JSON.stringify(this.timestamps));
           await storage.set('vercel-scanner-init', JSON.stringify({
@@ -988,14 +978,6 @@
           
           this.updateTimestampCache();
           await this.saveAllData();
-          
-          // Verify data was saved
-          const savedCheck = await storage.get('vercel-scanner-extremes');
-          if (savedCheck) {
-            const savedDB = JSON.parse(savedCheck.value);
-            const savedVolCount = savedDB[sampleSymbol]?.[sampleTf]?.volume?.top50?.length || 0;
-            console.log(`Saved data check - ${sampleSymbol} ${sampleTf}: ${savedVolCount} volume entries`);
-          }
           
           this.render();
           alert(`Historical data fetched successfully! Fetched data for ${this.state.symbols.length} symbols.`);
@@ -1188,12 +1170,6 @@
         // Ensure oiHistory is initialized
         if (!this.oiHistory) this.oiHistory = {};
         
-        // Debug logging
-        console.log('getExplorerData - Symbol:', symbol);
-        console.log('getExplorerData - extremesDB keys:', Object.keys(extremesDB));
-        console.log('getExplorerData - extremesDB[symbol]:', extremesDB[symbol]);
-        console.log('getExplorerData - oiHistory[symbol]:', this.oiHistory[symbol]);
-        
         const data = {
           symbol,
           timeframes: {}
@@ -1204,8 +1180,6 @@
           const candleData = extremesDB[symbol]?.[tf]?.candleSize?.top50 || [];
           const oiPosData = (this.oiHistory[symbol] && this.oiHistory[symbol][tf]) ? (this.oiHistory[symbol][tf].top50Positive || []) : [];
           const oiNegData = (this.oiHistory[symbol] && this.oiHistory[symbol][tf]) ? (this.oiHistory[symbol][tf].top50Negative || []) : [];
-          
-          console.log(`getExplorerData - ${tf}: volData=${volData.length}, candleData=${candleData.length}, oiPosData=${oiPosData.length}, oiNegData=${oiNegData.length}`);
           
           // Filter by time
           const filteredVol = this.filterDataByTime(volData, this.state.timeFilter);
