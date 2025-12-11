@@ -694,7 +694,22 @@
 
         try {
           const extremesData = await storage.get('vercel-scanner-extremes');
-          const extremesDB = extremesData ? JSON.parse(extremesData.value) : {};
+          let extremesDB = extremesData ? JSON.parse(extremesData.value) : {};
+          
+          // Ensure structure exists for all symbols
+          this.state.symbols.forEach(symbol => {
+            if (!extremesDB[symbol]) {
+              extremesDB[symbol] = {};
+            }
+            TIMEFRAMES.forEach(tf => {
+              if (!extremesDB[symbol][tf]) {
+                extremesDB[symbol][tf] = {
+                  volume: { top50: [] },
+                  candleSize: { top50: [] }
+                };
+              }
+            });
+          });
 
           // Calculate total requests needed
           // If count > 1000, we need multiple API calls per symbol/timeframe
@@ -804,6 +819,13 @@
                   }
 
                   fetchData[`${symbol}_${tf}`] = new Date().toISOString();
+                  
+                  // Save incrementally every 50 progress updates to make data visible during fetch
+                  if (this.state.progress.current % 50 === 0) {
+                    await storage.set('vercel-scanner-extremes', JSON.stringify(extremesDB));
+                    await storage.set('vercel-scanner-timestamps', JSON.stringify(this.timestamps));
+                  }
+                  
                   this.state.progress.current++;
                   this.render();
                 } catch (error) {
@@ -813,6 +835,10 @@
                 }
               }
             }));
+            
+            // Save after each batch to ensure data is persisted
+            await storage.set('vercel-scanner-extremes', JSON.stringify(extremesDB));
+            await storage.set('vercel-scanner-timestamps', JSON.stringify(this.timestamps));
             
             // Delay between batches to respect rate limits
             if (i + 15 < this.state.symbols.length) {
