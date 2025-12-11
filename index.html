@@ -599,17 +599,23 @@
 
           this.state.symbols = perpetuals;
           
-          // Initialize empty structure
+          // Initialize empty structure, but preserve existing data if it exists
           const fetchData = {};
-          const extremesDB = {};
+          const existingExtremes = await storage.get('vercel-scanner-extremes');
+          const extremesDB = existingExtremes ? JSON.parse(existingExtremes.value) : {};
           
+          // Only initialize if symbol doesn't exist, preserve existing data
           perpetuals.forEach(symbol => {
-            extremesDB[symbol] = {};
+            if (!extremesDB[symbol]) {
+              extremesDB[symbol] = {};
+            }
             TIMEFRAMES.forEach(tf => {
-              extremesDB[symbol][tf] = {
-                volume: { top50: [] },
-                candleSize: { top50: [] }
-              };
+              if (!extremesDB[symbol][tf]) {
+                extremesDB[symbol][tf] = {
+                  volume: { top50: [] },
+                  candleSize: { top50: [] }
+                };
+              }
             });
           });
 
@@ -738,13 +744,20 @@
                   
                   const klines = allKlines.slice(0, count);
 
-                  if (!Array.isArray(klines) || klines.length === 0) continue;
+                  if (!Array.isArray(klines) || klines.length === 0) {
+                    console.warn(`No klines data for ${symbol} ${tf}`);
+                    this.state.progress.current++;
+                    this.render();
+                    continue;
+                  }
 
                   const processed = klines.map(k => ({
                     time: k[0],
                     volume: parseFloat(k[5]),
                     candleSize: ((parseFloat(k[2]) - parseFloat(k[3])) / parseFloat(k[3])) * 100
                   }));
+
+                  console.log(`Fetched ${processed.length} candles for ${symbol} ${tf}`);
 
                   const volumeSorted = [...processed].sort((a, b) => b.volume - a.volume);
                   const candleSorted = [...processed].sort((a, b) => b.candleSize - a.candleSize);
@@ -754,6 +767,8 @@
                   
                   const mergedVol = [...existingVol, ...volumeSorted].sort((a, b) => b.volume - a.volume).slice(0, 50);
                   const mergedCandle = [...existingCandle, ...candleSorted].sort((a, b) => b.candleSize - a.candleSize).slice(0, 50);
+
+                  console.log(`Storing ${mergedVol.length} volume entries and ${mergedCandle.length} candle entries for ${symbol} ${tf}`);
 
                   extremesDB[symbol][tf] = {
                     volume: { top50: mergedVol },
@@ -927,6 +942,13 @@
             }
           }
 
+          // Verify data was stored before saving
+          const sampleSymbol = this.state.symbols[0];
+          const sampleTf = TIMEFRAMES[0];
+          const sampleVolCount = extremesDB[sampleSymbol]?.[sampleTf]?.volume?.top50?.length || 0;
+          const sampleCandleCount = extremesDB[sampleSymbol]?.[sampleTf]?.candleSize?.top50?.length || 0;
+          console.log(`Sample data check - ${sampleSymbol} ${sampleTf}: ${sampleVolCount} volume, ${sampleCandleCount} candle entries`);
+          
           await storage.set('vercel-scanner-extremes', JSON.stringify(extremesDB));
           await storage.set('vercel-scanner-timestamps', JSON.stringify(this.timestamps));
           await storage.set('vercel-scanner-init', JSON.stringify({
@@ -941,8 +963,16 @@
           this.updateTimestampCache();
           await this.saveAllData();
           
+          // Verify data was saved
+          const savedCheck = await storage.get('vercel-scanner-extremes');
+          if (savedCheck) {
+            const savedDB = JSON.parse(savedCheck.value);
+            const savedVolCount = savedDB[sampleSymbol]?.[sampleTf]?.volume?.top50?.length || 0;
+            console.log(`Saved data check - ${sampleSymbol} ${sampleTf}: ${savedVolCount} volume entries`);
+          }
+          
           this.render();
-          alert('Historical data fetched successfully!');
+          alert(`Historical data fetched successfully! Fetched data for ${this.state.symbols.length} symbols.`);
         } catch (error) {
           console.error('Fetch historical data error:', error);
           alert('Error: ' + error.message);
