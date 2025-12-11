@@ -22,7 +22,10 @@
       const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
       const offset = -new Date().getTimezoneOffset() / 60;
       const offsetStr = offset >= 0 ? `UTC+${offset}` : `UTC${offset}`;
-      return { tz, offset, offsetStr };
+      // Get timezone abbreviation if possible
+      const date = new Date();
+      const tzAbbr = date.toLocaleTimeString('en', { timeZoneName: 'short' }).split(' ').pop();
+      return { tz, offset, offsetStr, tzAbbr };
     };
 
     const storage = {
@@ -78,7 +81,10 @@
           timeFilter: 'all', // 'all', '30d', 'month', '7d'
           lastFetch: {},
           symbols: [],
-          showImportPrompt: false
+          showImportPrompt: false,
+          showCandlePrompt: false,
+          candleCount: 100,
+          showFetchDialog: false
         };
         this.wsRefs = [];
         this.lastOIData = {};
@@ -92,9 +98,30 @@
 
       async init() {
         await this.loadStoredData();
+        
+        // Check if there's any stored data
+        const hasStoredData = this.state.initialized || 
+                              Object.keys(this.oiHistory).length > 0 ||
+                              Object.keys(this.timestamps).length > 0;
+        
         if (!this.state.initialized) {
-          this.state.showImportPrompt = true;
+          // If no initialization but might have partial data, or completely new
+          if (hasStoredData) {
+            // Has some stored data - ask about import/download
+            this.state.showImportPrompt = true;
+          } else {
+            // Completely new - show import prompt first, then candle prompt after init
+            this.state.showImportPrompt = true;
+          }
+        } else {
+          // Already initialized - check if they want to fetch more data
+          const hasData = Object.keys(this.timestamps).length > 0;
+          if (!hasData) {
+            // Initialized but no data - ask about fetching
+            this.state.showCandlePrompt = true;
+          }
         }
+        
         this.render();
         if (this.state.initialized && this.state.symbols.length > 0) {
           this.startOIPolling();
@@ -364,12 +391,35 @@
             this.state.symbols = Array.from(symbolSet);
           }
           
+          // Update initialized state if imported data has symbols
+          if (data.symbols && data.symbols.length > 0 && !this.state.initialized) {
+            this.state.initialized = true;
+            await storage.set('vercel-scanner-init', JSON.stringify({
+              initialized: true,
+              lastFetch: this.state.lastFetch,
+              symbols: this.state.symbols
+            }));
+          }
+          
           this.updateTimestampCache();
           await this.saveAllData();
           
           alert('Data imported successfully!');
           this.state.showImportPrompt = false;
+          
+          // After import, check if they want to fetch more data
+          const hasData = Object.keys(this.timestamps).length > 0;
+          if (!hasData) {
+            this.state.showCandlePrompt = true;
+          }
+          
           this.render();
+          
+          // Start OI polling if initialized
+          if (this.state.initialized && this.state.symbols.length > 0) {
+            this.startOIPolling();
+            this.startLiveMonitoring(this.state.symbols);
+          }
         } catch (error) {
           alert('Error importing data: ' + error.message);
         }
@@ -534,18 +584,84 @@
             .map(s => s.symbol);
 
           this.state.symbols = perpetuals;
-          // Volume/candle: 300 symbols × 5 timeframes = 1500
-          // OI: 300 symbols × 5 timeframes = 1500
-          // Total: 3000
-          this.state.progress.total = perpetuals.length * TIMEFRAMES.length * 2;
+          
+          // Initialize empty structure
+          const fetchData = {};
+          const extremesDB = {};
+          
+          perpetuals.forEach(symbol => {
+            extremesDB[symbol] = {};
+            TIMEFRAMES.forEach(tf => {
+              extremesDB[symbol][tf] = {
+                volume: { top50: [] },
+                candleSize: { top50: [] }
+              };
+            });
+          });
+
+          await storage.set('vercel-scanner-extremes', JSON.stringify(extremesDB));
+          await storage.set('vercel-scanner-timestamps', JSON.stringify(this.timestamps));
+          await storage.set('vercel-scanner-init', JSON.stringify({
+            initialized: true,
+            lastFetch: fetchData,
+            symbols: perpetuals
+          }));
+
+          this.state.lastFetch = fetchData;
+          this.state.initialized = true;
+          this.state.loading = false;
+          
+          // Check if there's existing data, if not ask about fetching
+          const hasData = Object.keys(this.timestamps).length > 0 || 
+                         Object.keys(this.oiHistory).length > 0;
+          if (!hasData) {
+            this.state.showCandlePrompt = true;
+          }
+          
+          this.updateTimestampCache();
+          await this.saveAllData();
+          
+          this.render();
+          this.startLiveMonitoring(perpetuals);
+        } catch (error) {
+          console.error('Initialization error:', error);
+          alert('Error: ' + error.message);
+          this.state.loading = false;
+          this.render();
+        }
+      }
+
+      async fetchHistoricalData(candleCount) {
+        if (!this.state.initialized || this.state.symbols.length === 0) {
+          alert('Please initialize scanner first');
+          return;
+        }
+        
+        const count = parseInt(candleCount) || 100;
+        if (count < 1 || count > 1000) {
+          alert('Candle count must be between 1 and 1000');
+          return;
+        }
+        
+        this.state.loading = true;
+        this.state.progress = { current: 0, total: 0 };
+        this.state.showFetchDialog = false;
+        this.render();
+
+        try {
+          const extremesData = await storage.get('vercel-scanner-extremes');
+          const extremesDB = extremesData ? JSON.parse(extremesData.value) : {};
+
+          // Volume/candle: symbols × timeframes
+          // OI: symbols × timeframes
+          this.state.progress.total = this.state.symbols.length * TIMEFRAMES.length * 2;
           this.render();
 
           const fetchData = {};
-          const extremesDB = {};
 
           // Fetch volume and candle data in batches of 10
-          for (let i = 0; i < perpetuals.length; i += 10) {
-            const batch = perpetuals.slice(i, i + 10);
+          for (let i = 0; i < this.state.symbols.length; i += 10) {
+            const batch = this.state.symbols.slice(i, i + 10);
             
             await Promise.all(batch.map(async (symbol) => {
               if (!extremesDB[symbol]) extremesDB[symbol] = {};
@@ -554,7 +670,7 @@
                 try {
                   await new Promise(resolve => setTimeout(resolve, 150));
                   const klines = await fetchWithRetry(
-                    `https://fapi.binance.com/fapi/v1/klines?symbol=${symbol}&interval=${tf}&limit=1000`
+                    `https://fapi.binance.com/fapi/v1/klines?symbol=${symbol}&interval=${tf}&limit=${count}`
                   );
 
                   if (!Array.isArray(klines) || klines.length === 0) continue;
@@ -568,9 +684,15 @@
                   const volumeSorted = [...processed].sort((a, b) => b.volume - a.volume);
                   const candleSorted = [...processed].sort((a, b) => b.candleSize - a.candleSize);
 
+                  const existingVol = extremesDB[symbol][tf]?.volume?.top50 || [];
+                  const existingCandle = extremesDB[symbol][tf]?.candleSize?.top50 || [];
+                  
+                  const mergedVol = [...existingVol, ...volumeSorted].sort((a, b) => b.volume - a.volume).slice(0, 50);
+                  const mergedCandle = [...existingCandle, ...candleSorted].sort((a, b) => b.candleSize - a.candleSize).slice(0, 50);
+
                   extremesDB[symbol][tf] = {
-                    volume: { top50: volumeSorted.slice(0, 50) },
-                    candleSize: { top50: candleSorted.slice(0, 50) }
+                    volume: { top50: mergedVol },
+                    candleSize: { top50: mergedCandle }
                   };
 
                   if (!this.timestamps[symbol]) this.timestamps[symbol] = {};
@@ -579,43 +701,61 @@
                   const oldestTime = new Date(processed[0].time);
                   const newestTime = new Date(processed[processed.length - 1].time);
                   
-                  this.timestamps[symbol][tf].volume = {
-                    oldest: oldestTime.toISOString(),
-                    lastUpdate: newestTime.toISOString()
-                  };
-                  this.timestamps[symbol][tf].candle = {
-                    oldest: oldestTime.toISOString(),
-                    lastUpdate: newestTime.toISOString()
-                  };
+                  if (!this.timestamps[symbol][tf].volume) {
+                    this.timestamps[symbol][tf].volume = {
+                      oldest: oldestTime.toISOString(),
+                      lastUpdate: newestTime.toISOString()
+                    };
+                  } else {
+                    const existingOldest = new Date(this.timestamps[symbol][tf].volume.oldest);
+                    this.timestamps[symbol][tf].volume.oldest = oldestTime < existingOldest ? oldestTime.toISOString() : this.timestamps[symbol][tf].volume.oldest;
+                    this.timestamps[symbol][tf].volume.lastUpdate = newestTime.toISOString();
+                  }
+                  
+                  if (!this.timestamps[symbol][tf].candle) {
+                    this.timestamps[symbol][tf].candle = {
+                      oldest: oldestTime.toISOString(),
+                      lastUpdate: newestTime.toISOString()
+                    };
+                  } else {
+                    const existingOldest = new Date(this.timestamps[symbol][tf].candle.oldest);
+                    this.timestamps[symbol][tf].candle.oldest = oldestTime < existingOldest ? oldestTime.toISOString() : this.timestamps[symbol][tf].candle.oldest;
+                    this.timestamps[symbol][tf].candle.lastUpdate = newestTime.toISOString();
+                  }
 
                   fetchData[`${symbol}_${tf}`] = new Date().toISOString();
                   this.state.progress.current++;
                   this.render();
                 } catch (error) {
                   console.error(`Error fetching ${symbol} ${tf}:`, error);
+                  this.state.progress.current++;
+                  this.render();
                 }
               }
             }));
           }
 
           // Fetch historical OI data in batches of 10
-          for (let i = 0; i < perpetuals.length; i += 10) {
-            const batch = perpetuals.slice(i, i + 10);
+          for (let i = 0; i < this.state.symbols.length; i += 10) {
+            const batch = this.state.symbols.slice(i, i + 10);
             
             await Promise.all(batch.map(async (symbol) => {
               for (const tf of TIMEFRAMES) {
                 try {
                   await new Promise(resolve => setTimeout(resolve, 150));
                   
-                  // Map timeframe to Binance period
                   const periodMap = { '15m': '15m', '1h': '1h', '4h': '4h', '12h': '12h', '1d': '1d' };
                   const period = periodMap[tf];
                   
                   const oiData = await fetchWithRetry(
-                    `https://fapi.binance.com/fapi/v1/openInterestHist?symbol=${symbol}&period=${period}&limit=1000`
+                    `https://fapi.binance.com/fapi/v1/openInterestHist?symbol=${symbol}&period=${period}&limit=${count}`
                   );
 
-                  if (!Array.isArray(oiData) || oiData.length < 2) continue;
+                  if (!Array.isArray(oiData) || oiData.length < 2) {
+                    this.state.progress.current++;
+                    this.render();
+                    continue;
+                  }
 
                   if (!this.oiHistory[symbol]) this.oiHistory[symbol] = {};
                   if (!this.oiHistory[symbol][tf]) {
@@ -666,16 +806,24 @@
                   const oldestTime = new Date(oldestOI.timestamp || oldestOI.time);
                   const newestTime = new Date(newestOI.timestamp || newestOI.time);
                   
-                  this.timestamps[symbol][tf].oi = {
-                    oldest: oldestTime.toISOString(),
-                    lastUpdate: newestTime.toISOString()
-                  };
+                  if (!this.timestamps[symbol][tf].oi) {
+                    this.timestamps[symbol][tf].oi = {
+                      oldest: oldestTime.toISOString(),
+                      lastUpdate: newestTime.toISOString()
+                    };
+                  } else {
+                    const existingOldest = new Date(this.timestamps[symbol][tf].oi.oldest);
+                    this.timestamps[symbol][tf].oi.oldest = oldestTime < existingOldest ? oldestTime.toISOString() : this.timestamps[symbol][tf].oi.oldest;
+                    this.timestamps[symbol][tf].oi.lastUpdate = newestTime.toISOString();
+                  }
 
                   fetchData[`${symbol}_${tf}_oi`] = new Date().toISOString();
                   this.state.progress.current++;
                   this.render();
                 } catch (error) {
                   console.error(`Error fetching OI for ${symbol} ${tf}:`, error);
+                  this.state.progress.current++;
+                  this.render();
                 }
               }
             }));
@@ -685,21 +833,20 @@
           await storage.set('vercel-scanner-timestamps', JSON.stringify(this.timestamps));
           await storage.set('vercel-scanner-init', JSON.stringify({
             initialized: true,
-            lastFetch: fetchData,
-            symbols: perpetuals
+            lastFetch: { ...this.state.lastFetch, ...fetchData },
+            symbols: this.state.symbols
           }));
 
-          this.state.lastFetch = fetchData;
-          this.state.initialized = true;
+          this.state.lastFetch = { ...this.state.lastFetch, ...fetchData };
           this.state.loading = false;
           
           this.updateTimestampCache();
           await this.saveAllData();
           
           this.render();
-          this.startLiveMonitoring(perpetuals);
+          alert('Historical data fetched successfully!');
         } catch (error) {
-          console.error('Initialization error:', error);
+          console.error('Fetch historical data error:', error);
           alert('Error: ' + error.message);
           this.state.loading = false;
           this.render();
@@ -966,14 +1113,20 @@
         
         const filteredSymbols = this.getFilteredSymbols();
         
+        const tzDisplay = this.timezone.tzAbbr || `${this.timezone.tz} (${this.timezone.offsetStr})`;
+        
         root.innerHTML = `
-          <div class="text-xs text-gray-500 mb-2 text-right">EST: UTC-5</div>
+          <div class="text-xs text-gray-500 mb-2 text-right">Timezone: ${tzDisplay}</div>
           <div class="flex items-center justify-between mb-6">
             <h1 class="text-3xl font-bold">Vercel Scanner</h1>
             <div class="flex items-center gap-4">
               ${s.initialized ? `
                 <button onclick="scanner.exportData()" class="px-4 py-2 bg-green-600 hover:bg-green-700 rounded">
                   Export Data
+                </button>
+                <button onclick="scanner.state.showFetchDialog = true; scanner.render()" ${s.loading ? 'disabled' : ''} 
+                  class="px-4 py-2 bg-orange-600 hover:bg-orange-700 disabled:bg-gray-600 rounded">
+                  Fetch Historical Data
                 </button>
                 <button onclick="scanner.fillGaps()" ${s.loading ? 'disabled' : ''} 
                   class="px-4 py-2 bg-purple-600 hover:bg-purple-700 disabled:bg-gray-600 rounded">
@@ -1003,17 +1156,75 @@
           ${s.showImportPrompt ? `
             <div class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
               <div class="bg-gray-800 rounded-lg p-6 max-w-md">
-                <h2 class="text-xl font-bold mb-4">Import Existing Data?</h2>
-                <p class="text-gray-300 mb-4">Do you want to import previously exported data before initializing?</p>
-                <div class="flex gap-4">
+                <h2 class="text-xl font-bold mb-4">${s.initialized ? 'Import/Download Data?' : 'Import Existing Data?'}</h2>
+                <p class="text-gray-300 mb-4">
+                  ${s.initialized 
+                    ? 'Do you want to import previously exported data or download current browser data?' 
+                    : 'Do you want to import previously exported data before initializing?'}
+                </p>
+                <div class="flex flex-col gap-3">
                   <input type="file" id="importFile" accept=".json" class="hidden" 
                          onchange="scanner.importData(this.files[0])">
-                  <label for="importFile" class="px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded cursor-pointer">
-                    Import Data
+                  <label for="importFile" class="px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded cursor-pointer text-center">
+                    Import from File
                   </label>
+                  ${s.initialized ? `
+                    <button onclick="scanner.exportData(); scanner.state.showImportPrompt = false; scanner.render()" 
+                            class="px-4 py-2 bg-green-600 hover:bg-green-700 rounded">
+                      Download Current Data
+                    </button>
+                  ` : ''}
                   <button onclick="scanner.state.showImportPrompt = false; scanner.render()" 
                           class="px-4 py-2 bg-gray-600 hover:bg-gray-700 rounded">
+                    ${s.initialized ? 'Cancel' : 'Skip'}
+                  </button>
+                </div>
+              </div>
+            </div>
+          ` : ''}
+
+          ${s.showCandlePrompt ? `
+            <div class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+              <div class="bg-gray-800 rounded-lg p-6 max-w-md">
+                <h2 class="text-xl font-bold mb-4">Fetch Historical Data?</h2>
+                <p class="text-gray-300 mb-4">How many candles per timeframe would you like to fetch? (1-1000)</p>
+                <div class="mb-4">
+                  <input type="number" id="candleCountInput" value="${s.candleCount}" min="1" max="1000"
+                         class="w-full px-4 py-2 bg-gray-700 rounded text-white"
+                         oninput="scanner.state.candleCount = parseInt(this.value) || 100">
+                </div>
+                <div class="flex gap-4">
+                  <button onclick="scanner.fetchHistoricalData(scanner.state.candleCount); scanner.state.showCandlePrompt = false; scanner.render()" 
+                          class="px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded">
+                    Fetch Data
+                  </button>
+                  <button onclick="scanner.state.showCandlePrompt = false; scanner.render()" 
+                          class="px-4 py-2 bg-gray-600 hover:bg-gray-700 rounded">
                     Skip
+                  </button>
+                </div>
+              </div>
+            </div>
+          ` : ''}
+
+          ${s.showFetchDialog ? `
+            <div class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+              <div class="bg-gray-800 rounded-lg p-6 max-w-md">
+                <h2 class="text-xl font-bold mb-4">Fetch Historical Data</h2>
+                <p class="text-gray-300 mb-4">How many candles per timeframe would you like to fetch? (1-1000)</p>
+                <div class="mb-4">
+                  <input type="number" id="fetchCandleCountInput" value="${s.candleCount}" min="1" max="1000"
+                         class="w-full px-4 py-2 bg-gray-700 rounded text-white"
+                         oninput="scanner.state.candleCount = parseInt(this.value) || 100">
+                </div>
+                <div class="flex gap-4">
+                  <button onclick="scanner.fetchHistoricalData(scanner.state.candleCount); scanner.state.showFetchDialog = false; scanner.render()" 
+                          class="px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded">
+                    Fetch Data
+                  </button>
+                  <button onclick="scanner.state.showFetchDialog = false; scanner.render()" 
+                          class="px-4 py-2 bg-gray-600 hover:bg-gray-700 rounded">
+                    Cancel
                   </button>
                 </div>
               </div>
