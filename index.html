@@ -1116,7 +1116,12 @@
         try {
           const stored = localStorage.getItem('vercel-scanner-extremes');
           if (stored) extremesDB = JSON.parse(stored);
-        } catch (e) {}
+        } catch (e) {
+          console.error('Error reading extremes from localStorage:', e);
+        }
+        
+        // Ensure oiHistory is initialized
+        if (!this.oiHistory) this.oiHistory = {};
         
         const data = {
           symbol,
@@ -1126,8 +1131,8 @@
         TIMEFRAMES.forEach(tf => {
           const volData = extremesDB[symbol]?.[tf]?.volume?.top50 || [];
           const candleData = extremesDB[symbol]?.[tf]?.candleSize?.top50 || [];
-          const oiPosData = this.oiHistory[symbol]?.[tf]?.top50Positive || [];
-          const oiNegData = this.oiHistory[symbol]?.[tf]?.top50Negative || [];
+          const oiPosData = (this.oiHistory[symbol] && this.oiHistory[symbol][tf]) ? (this.oiHistory[symbol][tf].top50Positive || []) : [];
+          const oiNegData = (this.oiHistory[symbol] && this.oiHistory[symbol][tf]) ? (this.oiHistory[symbol][tf].top50Negative || []) : [];
           
           // Filter by time
           const filteredVol = this.filterDataByTime(volData, this.state.timeFilter);
