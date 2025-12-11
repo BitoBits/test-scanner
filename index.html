@@ -674,19 +674,17 @@
         const totalRequests = symbolsCount * requestsPerSymbol * apiCallsPerRequest;
         const batches = Math.ceil(totalRequests / 15);
         
-        // More realistic timing: ~500ms per request (including network + processing)
-        // Plus 200ms delay between batches (increased to avoid rate limits)
-        // Account for rate limiting delays
-        const requestsInLastBatch = totalRequests % 15 || 15;
-        const timePerRequest = 500; // ms
+        // With 15 concurrent requests, each batch takes ~time of one request (they run in parallel)
+        // Actual observed: ~300-400ms per batch (including network + processing)
+        // Plus 200ms delay between batches
+        const timePerBatch = 400; // ms (accounts for parallel execution, not sequential)
         const delayPerBatch = 200; // ms
+        const timePerBatchWithDelay = timePerBatch + delayPerBatch;
         
-        // Calculate time: (batches - 1) full batches + last batch
-        const fullBatchesTime = (batches - 1) * (15 * timePerRequest + delayPerBatch);
-        const lastBatchTime = requestsInLastBatch * timePerRequest;
-        const rateLimitDelays = Math.floor(batches / 10) * 2000; // Extra delay every 10 batches
+        // Account for occasional rate limiting (adds ~2s every 10 batches)
+        const rateLimitDelays = Math.floor(batches / 10) * 2000;
         
-        const estimatedMs = fullBatchesTime + lastBatchTime + rateLimitDelays;
+        const estimatedMs = (batches * timePerBatchWithDelay) + rateLimitDelays;
         const estimatedSeconds = Math.ceil(estimatedMs / 1000);
         const minutes = Math.floor(estimatedSeconds / 60);
         const seconds = estimatedSeconds % 60;
