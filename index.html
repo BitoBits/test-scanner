@@ -668,21 +668,25 @@
         // More realistic estimates based on actual API behavior
         // Each symbol needs: 5 timeframes × 2 (volume/candle + OI) = 10 requests
         const requestsPerSymbol = TIMEFRAMES.length * 2;
-        const totalRequests = symbolsCount * requestsPerSymbol;
         
         // If >1000 candles, need multiple API calls per symbol/timeframe
         const apiCallsPerRequest = Math.ceil(candleCount / 1000);
-        const adjustedTotalRequests = totalRequests * apiCallsPerRequest;
-        const batches = Math.ceil(adjustedTotalRequests / 15);
+        const totalRequests = symbolsCount * requestsPerSymbol * apiCallsPerRequest;
+        const batches = Math.ceil(totalRequests / 15);
         
         // More realistic timing: ~500ms per request (including network + processing)
         // Plus 200ms delay between batches (increased to avoid rate limits)
         // Account for rate limiting delays
-        const baseTimePerBatch = 500 * 15; // 15 requests × 500ms
-        const delayPerBatch = 200;
+        const requestsInLastBatch = totalRequests % 15 || 15;
+        const timePerRequest = 500; // ms
+        const delayPerBatch = 200; // ms
+        
+        // Calculate time: (batches - 1) full batches + last batch
+        const fullBatchesTime = (batches - 1) * (15 * timePerRequest + delayPerBatch);
+        const lastBatchTime = requestsInLastBatch * timePerRequest;
         const rateLimitDelays = Math.floor(batches / 10) * 2000; // Extra delay every 10 batches
         
-        const estimatedMs = (batches * (baseTimePerBatch + delayPerBatch)) + rateLimitDelays;
+        const estimatedMs = fullBatchesTime + lastBatchTime + rateLimitDelays;
         const estimatedSeconds = Math.ceil(estimatedMs / 1000);
         const minutes = Math.floor(estimatedSeconds / 60);
         const seconds = estimatedSeconds % 60;
