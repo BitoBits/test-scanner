@@ -48,18 +48,29 @@
     };
 
     // Retry helper with exponential backoff
-    async function fetchWithRetry(url, maxRetries = 3, delay = 1000) {
+    async function fetchWithRetry(url, maxRetries = 3, delay = 1000, skipOnError = false) {
       for (let i = 0; i < maxRetries; i++) {
         try {
           const response = await fetch(url);
           if (response.status === 429) {
             // Rate limited - wait longer
-            await new Promise(resolve => setTimeout(resolve, delay * (i + 1) * 2));
+            const waitTime = delay * (i + 1) * 3; // Increased wait time
+            await new Promise(resolve => setTimeout(resolve, waitTime));
             continue;
+          }
+          if (response.status === 400 || response.status === 404) {
+            // Bad request or not found - skip silently if requested
+            if (skipOnError) return null;
+            throw new Error(`HTTP ${response.status}`);
           }
           if (!response.ok) throw new Error(`HTTP ${response.status}`);
           return await response.json();
         } catch (error) {
+          // Handle CORS and network errors
+          if (error.message.includes('Failed to fetch') || error.message.includes('CORS')) {
+            if (skipOnError) return null;
+            throw error;
+          }
           if (i === maxRetries - 1) throw error;
           await new Promise(resolve => setTimeout(resolve, delay * Math.pow(2, i)));
         }
@@ -652,20 +663,27 @@
       }
 
       calculateTimeEstimate(candleCount, symbolsCount) {
-        // Estimate: ~300ms per request, 15 concurrent, 100ms delay between batches
+        if (!symbolsCount || symbolsCount === 0) return 'N/A';
+        
+        // More realistic estimates based on actual API behavior
         // Each symbol needs: 5 timeframes × 2 (volume/candle + OI) = 10 requests
-        const requestsPerSymbol = TIMEFRAMES.length * 2; // volume/candle + OI
+        const requestsPerSymbol = TIMEFRAMES.length * 2;
         const totalRequests = symbolsCount * requestsPerSymbol;
-        const batches = Math.ceil(totalRequests / 15);
-        const requestsPerBatch = Math.min(15, totalRequests);
         
         // If >1000 candles, need multiple API calls per symbol/timeframe
         const apiCallsPerRequest = Math.ceil(candleCount / 1000);
         const adjustedTotalRequests = totalRequests * apiCallsPerRequest;
-        const adjustedBatches = Math.ceil(adjustedTotalRequests / 15);
+        const batches = Math.ceil(adjustedTotalRequests / 15);
         
-        // Time per batch: ~400ms (network) + 100ms (delay) = ~500ms
-        const estimatedSeconds = Math.ceil((adjustedBatches * 500) / 1000);
+        // More realistic timing: ~500ms per request (including network + processing)
+        // Plus 200ms delay between batches (increased to avoid rate limits)
+        // Account for rate limiting delays
+        const baseTimePerBatch = 500 * 15; // 15 requests × 500ms
+        const delayPerBatch = 200;
+        const rateLimitDelays = Math.floor(batches / 10) * 2000; // Extra delay every 10 batches
+        
+        const estimatedMs = (batches * (baseTimePerBatch + delayPerBatch)) + rateLimitDelays;
+        const estimatedSeconds = Math.ceil(estimatedMs / 1000);
         const minutes = Math.floor(estimatedSeconds / 60);
         const seconds = estimatedSeconds % 60;
         
@@ -688,8 +706,19 @@
         }
         
         this.state.loading = true;
-        this.state.progress = { current: 0, total: 0, message: 'Preparing to fetch historical data...' };
+        this.state.progress = { current: 0, total: 0, message: 'Preparing to fetch historical data...', startTime: Date.now(), elapsedTime: 0 };
         this.state.showFetchDialog = false;
+        
+        // Start timer
+        const timerInterval = setInterval(() => {
+          if (this.state.loading && this.state.progress.startTime) {
+            this.state.progress.elapsedTime = Math.floor((Date.now() - this.state.progress.startTime) / 1000);
+            this.render();
+          } else {
+            clearInterval(timerInterval);
+          }
+        }, 1000);
+        
         this.render();
 
         try {
@@ -836,9 +865,9 @@
             await storage.set('vercel-scanner-extremes', JSON.stringify(extremesDB));
             await storage.set('vercel-scanner-timestamps', JSON.stringify(this.timestamps));
             
-            // Delay between batches to respect rate limits
+            // Delay between batches to respect rate limits (increased to avoid 429 errors)
             if (i + 15 < this.state.symbols.length) {
-              await new Promise(resolve => setTimeout(resolve, 100));
+              await new Promise(resolve => setTimeout(resolve, 200));
             }
           }
 
@@ -868,9 +897,14 @@
                       url += `&endTime=${endTime}`;
                     }
                     
-                    const oiData = await fetchWithRetry(url);
-                    if (Array.isArray(oiData) && oiData.length > 0) {
-                      allOIData = [...oiData, ...allOIData];
+                    try {
+                      const oiData = await fetchWithRetry(url, 2, 2000, true); // Skip on CORS/404 errors
+                      if (oiData && Array.isArray(oiData) && oiData.length > 0) {
+                        allOIData = [...oiData, ...allOIData];
+                      }
+                    } catch (error) {
+                      // Silently skip OI if it fails (CORS, 404, etc.)
+                      console.log(`Skipping OI for ${symbol} ${tf}: ${error.message}`);
                     }
                     
                     // Small delay between batches
@@ -958,9 +992,9 @@
               }
             }));
             
-            // Delay between batches to respect rate limits
+            // Delay between batches to respect rate limits (increased to avoid 429 errors)
             if (i + 15 < this.state.symbols.length) {
-              await new Promise(resolve => setTimeout(resolve, 100));
+              await new Promise(resolve => setTimeout(resolve, 200));
             }
           }
 
@@ -974,13 +1008,16 @@
           }));
 
           this.state.lastFetch = { ...this.state.lastFetch, ...fetchData };
+          const totalTime = this.state.progress.startTime ? Math.floor((Date.now() - this.state.progress.startTime) / 1000) : 0;
           this.state.loading = false;
           
           this.updateTimestampCache();
           await this.saveAllData();
           
           this.render();
-          alert(`Historical data fetched successfully! Fetched data for ${this.state.symbols.length} symbols.`);
+          const minutes = Math.floor(totalTime / 60);
+          const seconds = totalTime % 60;
+          alert(`Historical data fetched successfully! Total time: ${minutes}m ${seconds}s`);
         } catch (error) {
           console.error('Fetch historical data error:', error);
           alert('Error: ' + error.message);
@@ -1481,9 +1518,14 @@
                     <div class="bg-blue-600 h-4 rounded-full transition-all" 
                       style="width: ${(s.progress.current / s.progress.total) * 100}%"></div>
                   </div>
-                  <div class="text-xs text-gray-400 text-center">
+                  <div class="text-xs text-gray-400 text-center mb-2">
                     Please wait, this may take a few minutes...
                   </div>
+                  ${s.progress.startTime ? `
+                    <div class="text-xs text-yellow-400 text-center font-semibold">
+                      Elapsed time: ${Math.floor((s.progress.elapsedTime || 0) / 60)}m ${(s.progress.elapsedTime || 0) % 60}s
+                    </div>
+                  ` : ''}
                 </div>
               </div>
             ` : ''}
