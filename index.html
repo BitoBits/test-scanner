@@ -17,6 +17,14 @@
       { id: 'feed3', name: '1D', timeframes: ['1d'] }
     ];
 
+    // Get timezone info
+    const getTimezone = () => {
+      const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+      const offset = -new Date().getTimezoneOffset() / 60;
+      const offsetStr = offset >= 0 ? `UTC+${offset}` : `UTC${offset}`;
+      return { tz, offset, offsetStr };
+    };
+
     const storage = {
       async get(key) {
         try {
@@ -36,6 +44,25 @@
       }
     };
 
+    // Retry helper with exponential backoff
+    async function fetchWithRetry(url, maxRetries = 3, delay = 1000) {
+      for (let i = 0; i < maxRetries; i++) {
+        try {
+          const response = await fetch(url);
+          if (response.status === 429) {
+            // Rate limited - wait longer
+            await new Promise(resolve => setTimeout(resolve, delay * (i + 1) * 2));
+            continue;
+          }
+          if (!response.ok) throw new Error(`HTTP ${response.status}`);
+          return await response.json();
+        } catch (error) {
+          if (i === maxRetries - 1) throw error;
+          await new Promise(resolve => setTimeout(resolve, delay * Math.pow(2, i)));
+        }
+      }
+    }
+
     class Scanner {
       constructor() {
         this.state = {
@@ -47,22 +74,24 @@
           showInfo: false,
           showExplorer: false,
           selectedSymbol: null,
+          coinSearch: '',
+          timeFilter: 'all', // 'all', '30d', 'month', '7d'
           lastFetch: {},
           symbols: [],
           showImportPrompt: false
         };
         this.wsRefs = [];
-        this.lastOIData = {}; // { symbol: { usdt: number, coin: number } }
-        this.oiHistory = {}; // { symbol: { timeframe: { changes: [...], top5Positive: [...], top5Negative: [...] } } }
-        this.timestamps = {}; // { symbol: { timeframe: { volume: { oldest: date, lastUpdate: date }, candle: {...}, oi: {...} } } }
-        this.timestampCache = {}; // Cached aggregates for fast tooltip access
+        this.lastOIData = {};
+        this.oiHistory = {}; // { symbol: { timeframe: { top50Positive: [], top50Negative: [] } } }
+        this.timestamps = {};
+        this.timestampCache = {};
         this.audioEl = new Audio('data:audio/wav;base64,UklGRnoGAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQoGAACBhYqFbF1fdJivrJBhNjVgodDbq2EcBj+a2/LDciUFLIHO8tiJNwgZaLvt559NEAxQp+PwtmMcBjiR1/LMeSwFJHfH8N2QQAoUXrTp66hVFApGn+DyvmwhBSuBzvLZiTYIGGS78OScTgwOTqXh8LdjHAU2jNXxzn0vBSh+zPDaklALFF7A7+mlVRIIQ5zd8sFuIwUqgM3y2Ik3CBhju+/gnE4MDU6l4fC3YxwFOIzV8c59LwUofszw2pJQCxNewO/ppVUSCEOc3fLBbiMFKoDN8tmJNwgYY7vv4JxODA1OpeHwt2McBTiM1fHOfS8FKH7M8NqSUAsUXsDv6aVVEghDnN3ywW4jBSqAzfLZiTcIGGO77+CcTgwNTqXh8LdjHAU4jNXxzn0vBSh+zPDaklALFF7A7+mlVRIIQ5zd8sFuIwUqgM3y2Yk3CBhju+/gnE4MDU6l4fC3YxwFOIzV8c59LwUofszw2pJQCxRewO/ppVUSCEOc3fLBbiMFKoDN8tmJNwgYY7vv4JxODA1OpeHwt2McBTiM1fHOfS8FKH7M8NqSUAsUXsDv6aVVEghDnN3ywW4jBSqAzfLZiTcIGGO77+CcTgwNTqXh8LdjHAU4jNXxzn0vBSh+zPDaklALFF7A7+mlVRIIQ5zd8sFuIwUqgM3y2Yk3CBhju+/gnE4MDU6l4fC3YxwFOIzV8c59LwUofszw2pJQCxRewO/ppVUSCEOc3fLBbiMFKoDN8tmJNwgYY7vv4JxODA1OpeHwt2McBTiM1fHOfS8FKH7M8NqSUAsUXsDv6aVVEghDnN3ywW4jBSqAzfLZiTcIGGO77+CcTgwNTqXh8LdjHAU4jNXxzn0vBSh+zPDaklALFF7A7+mlVRIIQ5zd8sFuIwUqgM3y2Yk3CBhju+/gnE4MDU6l4fC3YxwFOIzV8c59LwUofszw2pJQCxRewO/ppVUSCEOc3fLBbiMFKoDN8tmJNwgYY7vv4JxODA1OpeHwt2McBTiM1fHOfS8FKH7M8NqSUAsUXsDv6aVVEghDnN3ywW4jBSqAzfLZiTcIGGO77+CcTgwNTqXh8LdjHAU4jNXxzn0vBSh+zPDaklALFF7A7+mlVRIIQ5zd8sFuIwUqgM3y2Yk3CBhju+/gnE4MDU6l4fC3YxwFOIzV8c59LwUofszw2pJQCxRewO/ppVUSCEOc3fLBbiMFKoDN8tmJNwgYY7vv4JxODA1OpeHwt2McBTiM1fHOfS8FKH7M8NqSUAsUXsDv6aVVEghDnN3ywW4jBSqAzfLZiTcIGGO77+CcTgwNTqXh8LdjHAU4jNXxzn0vBSh+zPDaklALFF7A7+mlVRIIQ5zd8sFuIwUqgM3y');
+        this.timezone = getTimezone();
         this.init();
       }
 
       async init() {
         await this.loadStoredData();
-        // Always ask if user wants to import data
         if (!this.state.initialized) {
           this.state.showImportPrompt = true;
         }
@@ -82,25 +111,21 @@
             this.state.symbols = data.symbols || [];
           }
           
-          // Load OI history
           const oiData = await storage.get('vercel-scanner-oi');
           if (oiData) {
             this.oiHistory = JSON.parse(oiData.value);
           }
           
-          // Load timestamps
           const tsData = await storage.get('vercel-scanner-timestamps');
           if (tsData) {
             this.timestamps = JSON.parse(tsData.value);
           }
           
-          // Load timestamp cache
           const cacheData = await storage.get('vercel-scanner-timestamp-cache');
           if (cacheData) {
             this.timestampCache = JSON.parse(cacheData.value);
           }
           
-          // Load last OI data
           const lastOIData = await storage.get('vercel-scanner-last-oi');
           if (lastOIData) {
             this.lastOIData = JSON.parse(lastOIData.value);
@@ -118,7 +143,6 @@
       }
 
       updateTimestampCache() {
-        // Recalculate aggregates from per-coin timestamps
         const cache = {};
         
         TIMEFRAMES.forEach(tf => {
@@ -178,12 +202,8 @@
             
             if (data.openInterest) {
               const currentOIUsdt = parseFloat(data.openInterest);
-              // For coin value, we need to get price and calculate, or use sumOpenInterest if available
-              // Binance current OI endpoint returns openInterest in USDT
-              // We'll calculate coin value from price if sumOpenInterest not available
               let currentOICoin = data.sumOpenInterest ? parseFloat(data.sumOpenInterest) : null;
               
-              // If sumOpenInterest not available, we'll fetch price to calculate
               if (!currentOICoin) {
                 try {
                   const priceResponse = await fetch(`https://fapi.binance.com/fapi/v1/ticker/price?symbol=${symbol}`);
@@ -192,23 +212,21 @@
                     currentOICoin = currentOIUsdt / parseFloat(priceData.price);
                   }
                 } catch (e) {
-                  console.error(`Error fetching price for ${symbol}:`, e);
                   currentOICoin = 0;
                 }
               }
+              
               const prevOI = this.lastOIData[symbol];
               
               if (prevOI && prevOI.usdt > 0) {
                 const oiChangePercent = ((currentOIUsdt - prevOI.usdt) / prevOI.usdt) * 100;
                 
-                // Store OI change for each timeframe (using same timeframes)
                 TIMEFRAMES.forEach(tf => {
                   if (!this.oiHistory[symbol]) this.oiHistory[symbol] = {};
                   if (!this.oiHistory[symbol][tf]) {
                     this.oiHistory[symbol][tf] = {
-                      changes: [],
-                      top5Positive: [],
-                      top5Negative: []
+                      top50Positive: [],
+                      top50Negative: []
                     };
                   }
                   
@@ -219,20 +237,18 @@
                     timestamp: new Date().toISOString()
                   };
                   
-                  this.oiHistory[symbol][tf].changes.push(change);
-                  
-                  // Update top 5 positive
+                  // Update top 50 positive
                   if (oiChangePercent > 0) {
-                    this.oiHistory[symbol][tf].top5Positive.push(change);
-                    this.oiHistory[symbol][tf].top5Positive.sort((a, b) => b.percent - a.percent);
-                    this.oiHistory[symbol][tf].top5Positive = this.oiHistory[symbol][tf].top5Positive.slice(0, 5);
+                    this.oiHistory[symbol][tf].top50Positive.push(change);
+                    this.oiHistory[symbol][tf].top50Positive.sort((a, b) => b.percent - a.percent);
+                    this.oiHistory[symbol][tf].top50Positive = this.oiHistory[symbol][tf].top50Positive.slice(0, 50);
                   }
                   
-                  // Update top 5 negative
+                  // Update top 50 negative
                   if (oiChangePercent < 0) {
-                    this.oiHistory[symbol][tf].top5Negative.push(change);
-                    this.oiHistory[symbol][tf].top5Negative.sort((a, b) => a.percent - b.percent);
-                    this.oiHistory[symbol][tf].top5Negative = this.oiHistory[symbol][tf].top5Negative.slice(0, 5);
+                    this.oiHistory[symbol][tf].top50Negative.push(change);
+                    this.oiHistory[symbol][tf].top50Negative.sort((a, b) => a.percent - b.percent);
+                    this.oiHistory[symbol][tf].top50Negative = this.oiHistory[symbol][tf].top50Negative.slice(0, 50);
                   }
                   
                   // Update timestamp
@@ -273,7 +289,6 @@
           const text = await file.text();
           const data = JSON.parse(text);
           
-          // Merge extremes data
           if (data.extremes) {
             const currentExtremes = await storage.get('vercel-scanner-extremes');
             let extremesDB = currentExtremes ? JSON.parse(currentExtremes.value) : {};
@@ -281,46 +296,40 @@
             Object.keys(data.extremes).forEach(symbol => {
               if (!extremesDB[symbol]) extremesDB[symbol] = {};
               Object.keys(data.extremes[symbol]).forEach(tf => {
-                if (!extremesDB[symbol][tf]) extremesDB[symbol][tf] = { volume: { top5: [] }, candleSize: { top5: [] } };
+                if (!extremesDB[symbol][tf]) extremesDB[symbol][tf] = { volume: { top50: [] }, candleSize: { top50: [] } };
                 
-                // Merge volume top5
-                const mergedVol = [...(extremesDB[symbol][tf].volume.top5 || []), ...(data.extremes[symbol][tf].volume.top5 || [])];
+                const mergedVol = [...(extremesDB[symbol][tf].volume.top50 || []), ...(data.extremes[symbol][tf].volume.top50 || [])];
                 mergedVol.sort((a, b) => b.volume - a.volume);
-                extremesDB[symbol][tf].volume.top5 = mergedVol.slice(0, 5);
+                extremesDB[symbol][tf].volume.top50 = mergedVol.slice(0, 50);
                 
-                // Merge candle top5
-                const mergedCandle = [...(extremesDB[symbol][tf].candleSize.top5 || []), ...(data.extremes[symbol][tf].candleSize.top5 || [])];
+                const mergedCandle = [...(extremesDB[symbol][tf].candleSize.top50 || []), ...(data.extremes[symbol][tf].candleSize.top50 || [])];
                 mergedCandle.sort((a, b) => b.candleSize - a.candleSize);
-                extremesDB[symbol][tf].candleSize.top5 = mergedCandle.slice(0, 5);
+                extremesDB[symbol][tf].candleSize.top50 = mergedCandle.slice(0, 50);
               });
             });
             
             await storage.set('vercel-scanner-extremes', JSON.stringify(extremesDB));
           }
           
-          // Merge OI history
           if (data.oiHistory) {
             Object.keys(data.oiHistory).forEach(symbol => {
               if (!this.oiHistory[symbol]) this.oiHistory[symbol] = {};
               Object.keys(data.oiHistory[symbol]).forEach(tf => {
                 if (!this.oiHistory[symbol][tf]) {
-                  this.oiHistory[symbol][tf] = { changes: [], top5Positive: [], top5Negative: [] };
+                  this.oiHistory[symbol][tf] = { top50Positive: [], top50Negative: [] };
                 }
                 
-                // Merge changes
-                this.oiHistory[symbol][tf].changes = [...this.oiHistory[symbol][tf].changes, ...(data.oiHistory[symbol][tf].changes || [])];
-                this.oiHistory[symbol][tf].changes.sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
+                const mergedPos = [...this.oiHistory[symbol][tf].top50Positive, ...(data.oiHistory[symbol][tf].top50Positive || [])];
+                mergedPos.sort((a, b) => b.percent - a.percent);
+                this.oiHistory[symbol][tf].top50Positive = mergedPos.slice(0, 50);
                 
-                // Recalculate top5
-                const positives = this.oiHistory[symbol][tf].changes.filter(c => c.percent > 0).sort((a, b) => b.percent - a.percent).slice(0, 5);
-                const negatives = this.oiHistory[symbol][tf].changes.filter(c => c.percent < 0).sort((a, b) => a.percent - b.percent).slice(0, 5);
-                this.oiHistory[symbol][tf].top5Positive = positives;
-                this.oiHistory[symbol][tf].top5Negative = negatives;
+                const mergedNeg = [...this.oiHistory[symbol][tf].top50Negative, ...(data.oiHistory[symbol][tf].top50Negative || [])];
+                mergedNeg.sort((a, b) => a.percent - b.percent);
+                this.oiHistory[symbol][tf].top50Negative = mergedNeg.slice(0, 50);
               });
             });
           }
           
-          // Merge timestamps
           if (data.timestamps) {
             Object.keys(data.timestamps).forEach(symbol => {
               if (!this.timestamps[symbol]) this.timestamps[symbol] = {};
@@ -330,7 +339,6 @@
                   if (!this.timestamps[symbol][tf][metric]) {
                     this.timestamps[symbol][tf][metric] = data.timestamps[symbol][tf][metric];
                   } else {
-                    // Take oldest oldest and newest lastUpdate
                     const existing = this.timestamps[symbol][tf][metric];
                     const imported = data.timestamps[symbol][tf][metric];
                     this.timestamps[symbol][tf][metric] = {
@@ -343,7 +351,6 @@
             });
           }
           
-          // Merge lastFetch
           if (data.lastFetch) {
             Object.keys(data.lastFetch).forEach(key => {
               if (!this.state.lastFetch[key] || new Date(data.lastFetch[key]) > new Date(this.state.lastFetch[key])) {
@@ -352,7 +359,6 @@
             });
           }
           
-          // Merge symbols
           if (data.symbols) {
             const symbolSet = new Set([...this.state.symbols, ...data.symbols]);
             this.state.symbols = Array.from(symbolSet);
@@ -408,7 +414,6 @@
           const extremesData = await storage.get('vercel-scanner-extremes');
           const extremesDB = extremesData ? JSON.parse(extremesData.value) : {};
           
-          // Find missing data
           const missing = [];
           this.state.symbols.forEach(symbol => {
             TIMEFRAMES.forEach(tf => {
@@ -416,7 +421,6 @@
               const lastFetchTime = this.state.lastFetch[key] ? new Date(this.state.lastFetch[key]) : null;
               const now = new Date();
               
-              // Check if missing or stale (older than 1 hour)
               if (!lastFetchTime || (now - lastFetchTime) > 3600000) {
                 missing.push({ symbol, tf });
               }
@@ -426,19 +430,18 @@
           this.state.progress.total = missing.length;
           this.render();
           
-          // Fetch missing data in batches of 20
-          for (let i = 0; i < missing.length; i += 20) {
-            const batch = missing.slice(i, i + 20);
+          for (let i = 0; i < missing.length; i += 10) {
+            const batch = missing.slice(i, i + 10);
             await Promise.all(batch.map(async ({ symbol, tf }) => {
               try {
-                await new Promise(resolve => setTimeout(resolve, 50));
-                const klines = await fetch(
-                  `https://fapi.binance.com/fapi/v1/klines?symbol=${symbol}&interval=${tf}&limit=100`
-                ).then(r => r.json());
+                await new Promise(resolve => setTimeout(resolve, 150));
+                const klines = await fetchWithRetry(
+                  `https://fapi.binance.com/fapi/v1/klines?symbol=${symbol}&interval=${tf}&limit=1000`
+                );
                 
                 if (Array.isArray(klines) && klines.length > 0) {
                   if (!extremesDB[symbol]) extremesDB[symbol] = {};
-                  if (!extremesDB[symbol][tf]) extremesDB[symbol][tf] = { volume: { top5: [] }, candleSize: { top5: [] } };
+                  if (!extremesDB[symbol][tf]) extremesDB[symbol][tf] = { volume: { top50: [] }, candleSize: { top50: [] } };
                   
                   const processed = klines.map(k => ({
                     time: k[0],
@@ -449,19 +452,17 @@
                   const volumeSorted = [...processed].sort((a, b) => b.volume - a.volume);
                   const candleSorted = [...processed].sort((a, b) => b.candleSize - a.candleSize);
                   
-                  // Merge with existing
-                  const existingVol = extremesDB[symbol][tf].volume.top5 || [];
-                  const existingCandle = extremesDB[symbol][tf].candleSize.top5 || [];
+                  const existingVol = extremesDB[symbol][tf].volume.top50 || [];
+                  const existingCandle = extremesDB[symbol][tf].candleSize.top50 || [];
                   
-                  const mergedVol = [...existingVol, ...volumeSorted].sort((a, b) => b.volume - a.volume).slice(0, 5);
-                  const mergedCandle = [...existingCandle, ...candleSorted].sort((a, b) => b.candleSize - a.candleSize).slice(0, 5);
+                  const mergedVol = [...existingVol, ...volumeSorted].sort((a, b) => b.volume - a.volume).slice(0, 50);
+                  const mergedCandle = [...existingCandle, ...candleSorted].sort((a, b) => b.candleSize - a.candleSize).slice(0, 50);
                   
                   extremesDB[symbol][tf] = {
-                    volume: { top5: mergedVol },
-                    candleSize: { top5: mergedCandle }
+                    volume: { top50: mergedVol },
+                    candleSize: { top50: mergedCandle }
                   };
                   
-                  // Update timestamps
                   if (!this.timestamps[symbol]) this.timestamps[symbol] = {};
                   if (!this.timestamps[symbol][tf]) this.timestamps[symbol][tf] = {};
                   
@@ -533,25 +534,28 @@
             .map(s => s.symbol);
 
           this.state.symbols = perpetuals;
-          this.state.progress.total = perpetuals.length * TIMEFRAMES.length;
+          // Volume/candle: 300 symbols × 5 timeframes = 1500
+          // OI: 300 symbols × 5 timeframes = 1500
+          // Total: 3000
+          this.state.progress.total = perpetuals.length * TIMEFRAMES.length * 2;
           this.render();
 
           const fetchData = {};
           const extremesDB = {};
 
-          // Process in batches of 20
-          for (let i = 0; i < perpetuals.length; i += 20) {
-            const batch = perpetuals.slice(i, i + 20);
+          // Fetch volume and candle data in batches of 10
+          for (let i = 0; i < perpetuals.length; i += 10) {
+            const batch = perpetuals.slice(i, i + 10);
             
             await Promise.all(batch.map(async (symbol) => {
               if (!extremesDB[symbol]) extremesDB[symbol] = {};
               
               for (const tf of TIMEFRAMES) {
                 try {
-                  await new Promise(resolve => setTimeout(resolve, 50));
-                  const klines = await fetch(
-                    `https://fapi.binance.com/fapi/v1/klines?symbol=${symbol}&interval=${tf}&limit=100`
-                  ).then(r => r.json());
+                  await new Promise(resolve => setTimeout(resolve, 150));
+                  const klines = await fetchWithRetry(
+                    `https://fapi.binance.com/fapi/v1/klines?symbol=${symbol}&interval=${tf}&limit=1000`
+                  );
 
                   if (!Array.isArray(klines) || klines.length === 0) continue;
 
@@ -565,11 +569,10 @@
                   const candleSorted = [...processed].sort((a, b) => b.candleSize - a.candleSize);
 
                   extremesDB[symbol][tf] = {
-                    volume: { top5: volumeSorted.slice(0, 5) },
-                    candleSize: { top5: candleSorted.slice(0, 5) }
+                    volume: { top50: volumeSorted.slice(0, 50) },
+                    candleSize: { top50: candleSorted.slice(0, 50) }
                   };
 
-                  // Store timestamps
                   if (!this.timestamps[symbol]) this.timestamps[symbol] = {};
                   if (!this.timestamps[symbol][tf]) this.timestamps[symbol][tf] = {};
                   
@@ -590,6 +593,89 @@
                   this.render();
                 } catch (error) {
                   console.error(`Error fetching ${symbol} ${tf}:`, error);
+                }
+              }
+            }));
+          }
+
+          // Fetch historical OI data in batches of 10
+          for (let i = 0; i < perpetuals.length; i += 10) {
+            const batch = perpetuals.slice(i, i + 10);
+            
+            await Promise.all(batch.map(async (symbol) => {
+              for (const tf of TIMEFRAMES) {
+                try {
+                  await new Promise(resolve => setTimeout(resolve, 150));
+                  
+                  // Map timeframe to Binance period
+                  const periodMap = { '15m': '15m', '1h': '1h', '4h': '4h', '12h': '12h', '1d': '1d' };
+                  const period = periodMap[tf];
+                  
+                  const oiData = await fetchWithRetry(
+                    `https://fapi.binance.com/fapi/v1/openInterestHist?symbol=${symbol}&period=${period}&limit=1000`
+                  );
+
+                  if (!Array.isArray(oiData) || oiData.length < 2) continue;
+
+                  if (!this.oiHistory[symbol]) this.oiHistory[symbol] = {};
+                  if (!this.oiHistory[symbol][tf]) {
+                    this.oiHistory[symbol][tf] = {
+                      top50Positive: [],
+                      top50Negative: []
+                    };
+                  }
+
+                  // Calculate OI changes from historical data
+                  for (let j = 1; j < oiData.length; j++) {
+                    const prev = oiData[j - 1];
+                    const curr = oiData[j];
+                    const prevOI = parseFloat(prev.sumOpenInterest || prev.openInterest || 0);
+                    const currOI = parseFloat(curr.sumOpenInterest || curr.openInterest || 0);
+                    
+                    if (prevOI > 0) {
+                      const oiChangePercent = ((currOI - prevOI) / prevOI) * 100;
+                      
+                      const change = {
+                        usdt: currOI,
+                        coin: parseFloat(curr.sumOpenInterestValue || 0),
+                        percent: oiChangePercent,
+                        timestamp: new Date(curr.timestamp || curr.time).toISOString()
+                      };
+                      
+                      if (oiChangePercent > 0) {
+                        this.oiHistory[symbol][tf].top50Positive.push(change);
+                      } else if (oiChangePercent < 0) {
+                        this.oiHistory[symbol][tf].top50Negative.push(change);
+                      }
+                    }
+                  }
+                  
+                  // Sort and keep top 50
+                  this.oiHistory[symbol][tf].top50Positive.sort((a, b) => b.percent - a.percent);
+                  this.oiHistory[symbol][tf].top50Positive = this.oiHistory[symbol][tf].top50Positive.slice(0, 50);
+                  
+                  this.oiHistory[symbol][tf].top50Negative.sort((a, b) => a.percent - b.percent);
+                  this.oiHistory[symbol][tf].top50Negative = this.oiHistory[symbol][tf].top50Negative.slice(0, 50);
+                  
+                  // Update timestamps
+                  if (!this.timestamps[symbol]) this.timestamps[symbol] = {};
+                  if (!this.timestamps[symbol][tf]) this.timestamps[symbol][tf] = {};
+                  
+                  const oldestOI = oiData[0];
+                  const newestOI = oiData[oiData.length - 1];
+                  const oldestTime = new Date(oldestOI.timestamp || oldestOI.time);
+                  const newestTime = new Date(newestOI.timestamp || newestOI.time);
+                  
+                  this.timestamps[symbol][tf].oi = {
+                    oldest: oldestTime.toISOString(),
+                    lastUpdate: newestTime.toISOString()
+                  };
+
+                  fetchData[`${symbol}_${tf}_oi`] = new Date().toISOString();
+                  this.state.progress.current++;
+                  this.render();
+                } catch (error) {
+                  console.error(`Error fetching OI for ${symbol} ${tf}:`, error);
                 }
               }
             }));
@@ -651,15 +737,14 @@
 
         const extremes = extremesDB[symbol][interval];
 
-        if (vol > 0 && extremes.volume.top5.length > 0) {
-          const top5Vol = extremes.volume.top5;
-          if (top5Vol.length < 5 || vol > top5Vol[4].volume) {
+        if (vol > 0 && extremes.volume.top50.length > 0) {
+          const top50Vol = extremes.volume.top50;
+          if (top50Vol.length < 50 || vol > top50Vol[top50Vol.length - 1].volume) {
             const newEntry = { time: closeTime, volume: vol };
-            const merged = [...top5Vol, newEntry].sort((a, b) => b.volume - a.volume).slice(0, 5);
-            extremesDB[symbol][interval].volume.top5 = merged;
+            const merged = [...top50Vol, newEntry].sort((a, b) => b.volume - a.volume).slice(0, 50);
+            extremesDB[symbol][interval].volume.top50 = merged;
             await storage.set('vercel-scanner-extremes', JSON.stringify(extremesDB));
             
-            // Update timestamp
             if (!this.timestamps[symbol]) this.timestamps[symbol] = {};
             if (!this.timestamps[symbol][interval]) this.timestamps[symbol][interval] = {};
             if (!this.timestamps[symbol][interval].volume) {
@@ -669,26 +754,27 @@
             }
             
             const rank = merged.findIndex(v => v.time === closeTime) + 1;
-            this.addAlert(ALERT_FEEDS.find(f => f.timeframes.includes(interval))?.id, {
-              symbol,
-              type: 'volume',
-              subtype: `Top 5 Volume: #${rank}`,
-              value: vol.toFixed(2),
-              timeframe: interval,
-              timestamp: new Date(closeTime)
-            });
+            if (rank <= 5) {
+              this.addAlert(ALERT_FEEDS.find(f => f.timeframes.includes(interval))?.id, {
+                symbol,
+                type: 'volume',
+                subtype: `Top 5 Volume: #${rank}`,
+                value: vol.toFixed(2),
+                timeframe: interval,
+                timestamp: new Date(closeTime)
+              });
+            }
           }
         }
 
-        if (candleSize > 0 && extremes.candleSize.top5.length > 0) {
-          const top5Candle = extremes.candleSize.top5;
-          if (top5Candle.length < 5 || candleSize > top5Candle[4].candleSize) {
+        if (candleSize > 0 && extremes.candleSize.top50.length > 0) {
+          const top50Candle = extremes.candleSize.top50;
+          if (top50Candle.length < 50 || candleSize > top50Candle[top50Candle.length - 1].candleSize) {
             const newEntry = { time: closeTime, candleSize: candleSize };
-            const merged = [...top5Candle, newEntry].sort((a, b) => b.candleSize - a.candleSize).slice(0, 5);
-            extremesDB[symbol][interval].candleSize.top5 = merged;
+            const merged = [...top50Candle, newEntry].sort((a, b) => b.candleSize - a.candleSize).slice(0, 50);
+            extremesDB[symbol][interval].candleSize.top50 = merged;
             await storage.set('vercel-scanner-extremes', JSON.stringify(extremesDB));
             
-            // Update timestamp
             if (!this.timestamps[symbol]) this.timestamps[symbol] = {};
             if (!this.timestamps[symbol][interval]) this.timestamps[symbol][interval] = {};
             if (!this.timestamps[symbol][interval].candle) {
@@ -698,14 +784,16 @@
             }
             
             const rank = merged.findIndex(c => c.time === closeTime) + 1;
-            this.addAlert(ALERT_FEEDS.find(f => f.timeframes.includes(interval))?.id, {
-              symbol,
-              type: 'candleSize',
-              subtype: `Top 5 Candle Size: #${rank}`,
-              value: candleSize.toFixed(2) + '%',
-              timeframe: interval,
-              timestamp: new Date(closeTime)
-            });
+            if (rank <= 5) {
+              this.addAlert(ALERT_FEEDS.find(f => f.timeframes.includes(interval))?.id, {
+                symbol,
+                type: 'candleSize',
+                subtype: `Top 5 Candle Size: #${rank}`,
+                value: candleSize.toFixed(2) + '%',
+                timeframe: interval,
+                timestamp: new Date(closeTime)
+              });
+            }
           }
         }
         
@@ -735,6 +823,16 @@
         this.render();
       }
 
+      setTimeFilter(filter) {
+        this.state.timeFilter = filter;
+        this.render();
+      }
+
+      updateCoinSearch(value) {
+        this.state.coinSearch = value;
+        this.render();
+      }
+
       formatTimeAgo(dateStr) {
         if (!dateStr) return 'N/A';
         const date = new Date(dateStr);
@@ -753,14 +851,32 @@
         return new Date(dateStr).toLocaleDateString();
       }
 
+      filterDataByTime(data, timeFilter) {
+        if (timeFilter === 'all') return data;
+        
+        const now = new Date();
+        let cutoffDate;
+        
+        if (timeFilter === '30d') {
+          cutoffDate = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+        } else if (timeFilter === 'month') {
+          cutoffDate = new Date(now.getFullYear(), now.getMonth(), 1);
+        } else if (timeFilter === '7d') {
+          cutoffDate = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+        }
+        
+        return data.filter(item => {
+          const itemDate = new Date(item.timestamp || item.time);
+          return itemDate >= cutoffDate;
+        });
+      }
+
       getExplorerData() {
         if (!this.state.selectedSymbol) return null;
         
         const symbol = this.state.selectedSymbol;
-        const extremesData = storage.get('vercel-scanner-extremes');
         let extremesDB = {};
         
-        // Get extremes data synchronously for display
         try {
           const stored = localStorage.getItem('vercel-scanner-extremes');
           if (stored) extremesDB = JSON.parse(stored);
@@ -772,22 +888,46 @@
         };
         
         TIMEFRAMES.forEach(tf => {
+          const volData = extremesDB[symbol]?.[tf]?.volume?.top50 || [];
+          const candleData = extremesDB[symbol]?.[tf]?.candleSize?.top50 || [];
+          const oiPosData = this.oiHistory[symbol]?.[tf]?.top50Positive || [];
+          const oiNegData = this.oiHistory[symbol]?.[tf]?.top50Negative || [];
+          
+          // Filter by time
+          const filteredVol = this.filterDataByTime(volData, this.state.timeFilter);
+          const filteredCandle = this.filterDataByTime(candleData, this.state.timeFilter);
+          const filteredOIPos = this.filterDataByTime(oiPosData, this.state.timeFilter);
+          const filteredOINeg = this.filterDataByTime(oiNegData, this.state.timeFilter);
+          
+          // Sort and take top 5
+          const top5Vol = [...filteredVol].sort((a, b) => b.volume - a.volume).slice(0, 5);
+          const top5Candle = [...filteredCandle].sort((a, b) => b.candleSize - a.candleSize).slice(0, 5);
+          const top5OIPos = [...filteredOIPos].sort((a, b) => b.percent - a.percent).slice(0, 5);
+          const top5OINeg = [...filteredOINeg].sort((a, b) => a.percent - b.percent).slice(0, 5);
+          
           data.timeframes[tf] = {
-            volume: extremesDB[symbol]?.[tf]?.volume?.top5 || [],
-            candleSize: extremesDB[symbol]?.[tf]?.candleSize?.top5 || [],
-            oiPositive: this.oiHistory[symbol]?.[tf]?.top5Positive || [],
-            oiNegative: this.oiHistory[symbol]?.[tf]?.top5Negative || []
+            volume: top5Vol,
+            candleSize: top5Candle,
+            oiPositive: top5OIPos,
+            oiNegative: top5OINeg
           };
         });
         
         return data;
       }
 
+      getFilteredSymbols() {
+        const search = this.state.coinSearch.toLowerCase();
+        return this.state.symbols.filter(sym => {
+          const baseSymbol = sym.replace('USDT', '');
+          return baseSymbol.toLowerCase().includes(search) || sym.toLowerCase().includes(search);
+        });
+      }
+
       render() {
         const root = document.getElementById('root');
         const s = this.state;
         
-        // Info tooltip content
         const getInfoTooltip = () => {
           if (!this.timestampCache || Object.keys(this.timestampCache).length === 0) {
             return '<div class="text-gray-400 text-sm">No data available</div>';
@@ -799,6 +939,7 @@
               const key = `${tf}_${metric}`;
               const cache = this.timestampCache[key];
               if (cache) {
+                const metricName = metric === 'candle' ? 'CANDLE SIZE%' : metric.toUpperCase();
                 const oldestMin = new Date(cache.oldestMin);
                 const oldestMax = new Date(cache.oldestMax);
                 const lastUpdate = new Date(cache.lastUpdateMin);
@@ -811,7 +952,7 @@
                 
                 html += `
                   <div class="border-b border-gray-700 pb-2">
-                    <div class="font-semibold text-yellow-400">${tf.toUpperCase()} ${metric.toUpperCase()}</div>
+                    <div class="font-semibold text-yellow-400">${tf.toUpperCase()} ${metricName}</div>
                     <div class="text-gray-300">Oldest: ${oldestRange}</div>
                     <div class="text-gray-300">Last updated: ${this.formatDate(cache.lastUpdateMin)} (${this.formatTimeAgo(cache.lastUpdateMin)})</div>
                   </div>
@@ -823,7 +964,10 @@
           return html;
         };
         
+        const filteredSymbols = this.getFilteredSymbols();
+        
         root.innerHTML = `
+          <div class="text-xs text-gray-500 mb-2 text-right">EST: UTC-5</div>
           <div class="flex items-center justify-between mb-6">
             <h1 class="text-3xl font-bold">Vercel Scanner</h1>
             <div class="flex items-center gap-4">
@@ -846,7 +990,9 @@
                   ℹ️
                 </button>
                 ${s.showInfo ? `
-                  <div class="absolute right-0 top-full mt-2 w-96 bg-gray-800 rounded-lg p-4 shadow-xl z-50 border border-gray-700">
+                  <div class="absolute right-0 top-full mt-2 w-96 bg-gray-800 rounded-lg p-4 shadow-xl z-50 border border-gray-700"
+                       onmouseenter="scanner.state.showInfo = true"
+                       onmouseleave="scanner.state.showInfo = false; scanner.render()">
                     ${getInfoTooltip()}
                   </div>
                 ` : ''}
@@ -890,7 +1036,7 @@
                       style="width: ${(s.progress.current / s.progress.total) * 100}%"></div>
                   </div>
                   <div class="text-xs text-gray-400 mt-2 text-center">
-                    This will take 3-5 minutes. Fetching historical data...
+                    This will take 1-2 minutes. Fetching historical data...
                   </div>
                 </div>
               ` : ''}
@@ -899,65 +1045,94 @@
             ${s.showExplorer ? `
               <div class="mb-6 bg-gray-800 rounded-lg p-4">
                 <div class="mb-4">
-                  <label class="block text-sm font-semibold mb-2">Select Coin:</label>
-                  <input type="text" id="coinSearch" placeholder="Search coin..." 
-                         oninput="scanner.filterCoins(this.value)"
+                  <label class="block text-sm font-semibold mb-2">Search & Select Coin:</label>
+                  <input type="text" 
+                         value="${s.coinSearch}"
+                         oninput="scanner.updateCoinSearch(this.value)"
+                         placeholder="Type to search (e.g., BTC, ETH)..."
                          class="w-full px-4 py-2 bg-gray-700 rounded text-white mb-2">
-                  <select id="coinSelect" onchange="scanner.selectSymbol(this.value)" 
+                  <select onchange="scanner.selectSymbol(this.value)" 
                           class="w-full px-4 py-2 bg-gray-700 rounded text-white">
                     <option value="">-- Select a coin --</option>
-                    ${s.symbols.map(sym => `<option value="${sym}" ${sym === s.selectedSymbol ? 'selected' : ''}>${sym}</option>`).join('')}
+                    ${filteredSymbols.map(sym => {
+                      const baseSymbol = sym.replace('USDT', '');
+                      return `<option value="${sym}" ${sym === s.selectedSymbol ? 'selected' : ''}>${baseSymbol}</option>`;
+                    }).join('')}
                   </select>
                 </div>
                 ${s.selectedSymbol ? (() => {
                   const explorerData = this.getExplorerData();
                   if (!explorerData) return '<div class="text-gray-400">Loading...</div>';
                   
+                  const baseSymbol = explorerData.symbol.replace('USDT', '');
+                  
                   return `
-                    <div class="space-y-4">
-                      <h3 class="text-xl font-bold">${explorerData.symbol}</h3>
-                      ${TIMEFRAMES.map(tf => {
-                        const tfData = explorerData.timeframes[tf];
-                        return `
-                          <div class="bg-gray-900 rounded p-4">
-                            <h4 class="font-semibold text-lg mb-3">${tf}</h4>
-                            <div class="grid grid-cols-2 gap-4">
-                              <div>
-                                <h5 class="font-semibold text-green-400 mb-2">Top 5 OI Increases (%)</h5>
-                                ${tfData.oiPositive.length > 0 ? tfData.oiPositive.map((oi, idx) => `
-                                  <div class="text-sm mb-1">
-                                    #${idx + 1}: ${oi.percent.toFixed(2)}% (${new Date(oi.timestamp).toLocaleString()})
-                                  </div>
-                                `).join('') : '<div class="text-gray-500 text-sm">No data</div>'}
-                              </div>
-                              <div>
-                                <h5 class="font-semibold text-red-400 mb-2">Top 5 OI Decreases (%)</h5>
-                                ${tfData.oiNegative.length > 0 ? tfData.oiNegative.map((oi, idx) => `
-                                  <div class="text-sm mb-1">
-                                    #${idx + 1}: ${oi.percent.toFixed(2)}% (${new Date(oi.timestamp).toLocaleString()})
-                                  </div>
-                                `).join('') : '<div class="text-gray-500 text-sm">No data</div>'}
-                              </div>
-                              <div>
-                                <h5 class="font-semibold text-blue-400 mb-2">Top 5 Volume</h5>
-                                ${tfData.volume.length > 0 ? tfData.volume.map((vol, idx) => `
-                                  <div class="text-sm mb-1">
-                                    #${idx + 1}: ${vol.volume.toFixed(2)} (${new Date(vol.time).toLocaleString()})
-                                  </div>
-                                `).join('') : '<div class="text-gray-500 text-sm">No data</div>'}
-                              </div>
-                              <div>
-                                <h5 class="font-semibold text-yellow-400 mb-2">Top 5 Candle Size (%)</h5>
-                                ${tfData.candleSize.length > 0 ? tfData.candleSize.map((candle, idx) => `
-                                  <div class="text-sm mb-1">
-                                    #${idx + 1}: ${candle.candleSize.toFixed(2)}% (${new Date(candle.time).toLocaleString()})
-                                  </div>
-                                `).join('') : '<div class="text-gray-500 text-sm">No data</div>'}
+                    <div class="space-y-3">
+                      <div class="flex items-center justify-between mb-3">
+                        <h3 class="text-xl font-bold">${baseSymbol}</h3>
+                        <div class="flex gap-2">
+                          <button onclick="scanner.setTimeFilter('all')" 
+                                  class="px-3 py-1 text-xs ${s.timeFilter === 'all' ? 'bg-blue-600' : 'bg-gray-700'} rounded">
+                            All Time
+                          </button>
+                          <button onclick="scanner.setTimeFilter('30d')" 
+                                  class="px-3 py-1 text-xs ${s.timeFilter === '30d' ? 'bg-blue-600' : 'bg-gray-700'} rounded">
+                            Last 30 Days
+                          </button>
+                          <button onclick="scanner.setTimeFilter('month')" 
+                                  class="px-3 py-1 text-xs ${s.timeFilter === 'month' ? 'bg-blue-600' : 'bg-gray-700'} rounded">
+                            This Month
+                          </button>
+                          <button onclick="scanner.setTimeFilter('7d')" 
+                                  class="px-3 py-1 text-xs ${s.timeFilter === '7d' ? 'bg-blue-600' : 'bg-gray-700'} rounded">
+                            Last 7 Days
+                          </button>
+                        </div>
+                      </div>
+                      <div class="grid grid-cols-2 gap-3">
+                        ${TIMEFRAMES.map(tf => {
+                          const tfData = explorerData.timeframes[tf];
+                          return `
+                            <div class="bg-gray-900 rounded p-3 text-xs">
+                              <h4 class="font-semibold text-sm mb-2">${tf}</h4>
+                              <div class="grid grid-cols-2 gap-2">
+                                <div>
+                                  <h5 class="font-semibold text-green-400 mb-1 text-xs">Top 5 OI ↑</h5>
+                                  ${tfData.oiPositive.length > 0 ? tfData.oiPositive.map((oi, idx) => `
+                                    <div class="text-xs mb-0.5">
+                                      #${idx + 1}: ${oi.percent.toFixed(2)}%
+                                    </div>
+                                  `).join('') : '<div class="text-gray-500 text-xs">No data</div>'}
+                                </div>
+                                <div>
+                                  <h5 class="font-semibold text-red-400 mb-1 text-xs">Top 5 OI ↓</h5>
+                                  ${tfData.oiNegative.length > 0 ? tfData.oiNegative.map((oi, idx) => `
+                                    <div class="text-xs mb-0.5">
+                                      #${idx + 1}: ${oi.percent.toFixed(2)}%
+                                    </div>
+                                  `).join('') : '<div class="text-gray-500 text-xs">No data</div>'}
+                                </div>
+                                <div>
+                                  <h5 class="font-semibold text-blue-400 mb-1 text-xs">Top 5 Vol</h5>
+                                  ${tfData.volume.length > 0 ? tfData.volume.map((vol, idx) => `
+                                    <div class="text-xs mb-0.5">
+                                      #${idx + 1}: ${vol.volume.toFixed(2)}
+                                    </div>
+                                  `).join('') : '<div class="text-gray-500 text-xs">No data</div>'}
+                                </div>
+                                <div>
+                                  <h5 class="font-semibold text-yellow-400 mb-1 text-xs">Top 5 Candle%</h5>
+                                  ${tfData.candleSize.length > 0 ? tfData.candleSize.map((candle, idx) => `
+                                    <div class="text-xs mb-0.5">
+                                      #${idx + 1}: ${candle.candleSize.toFixed(2)}%
+                                    </div>
+                                  `).join('') : '<div class="text-gray-500 text-xs">No data</div>'}
+                                </div>
                               </div>
                             </div>
-                          </div>
-                        `;
-                      }).join('')}
+                          `;
+                        }).join('')}
+                      </div>
                     </div>
                   `;
                 })() : '<div class="text-gray-400">Select a coin to view data</div>'}
@@ -997,30 +1172,6 @@
             </div>
           `}
         `;
-      }
-
-      filterCoins(searchTerm) {
-        const select = document.getElementById('coinSelect');
-        if (!select) return;
-        
-        const options = Array.from(select.options);
-        const searchLower = searchTerm.toLowerCase();
-        options.forEach(option => {
-          if (option.value === '') return;
-          const matches = option.textContent.toLowerCase().includes(searchLower);
-          option.style.display = matches ? '' : 'none';
-        });
-        
-        // Auto-select first visible option if current selection is hidden
-        if (this.state.selectedSymbol) {
-          const selectedOption = Array.from(select.options).find(opt => opt.value === this.state.selectedSymbol);
-          if (selectedOption && selectedOption.style.display === 'none') {
-            const firstVisible = Array.from(select.options).find(opt => opt.value !== '' && opt.style.display !== 'none');
-            if (firstVisible) {
-              this.selectSymbol(firstVisible.value);
-            }
-          }
-        }
       }
     }
 
