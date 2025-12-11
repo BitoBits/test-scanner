@@ -860,7 +860,7 @@
                   const batchesNeeded = Math.ceil(count / 1000);
                   
                   for (let batchNum = 0; batchNum < batchesNeeded; batchNum++) {
-                    const limit = batchNum === batchesNeeded - 1 ? (count % 1000 || 1000) : 1000;
+                    const limit = batchNum === batchesNeeded - 1 ? (count % 1000 || count) : Math.min(1000, count);
                     const endTime = batchNum === 0 ? undefined : allOIData[0] ? (allOIData[0].timestamp || allOIData[0].time) - 1 : undefined;
                     
                     let url = `https://fapi.binance.com/fapi/v1/openInterestHist?symbol=${symbol}&period=${period}&limit=${limit}`;
